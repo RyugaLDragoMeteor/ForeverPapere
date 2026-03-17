@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ForeverPapere — Chatbox</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif;
+      user-select: none;
+    }
+
+    .chatbox {
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(
+        180deg,
+        rgba(10, 10, 30, 0.88) 0%,
+        rgba(15, 12, 35, 0.94) 100%
+      );
+      border: 1px solid rgba(120, 140, 255, 0.25);
+      border-radius: 12px;
+      box-shadow:
+        0 0 30px rgba(80, 100, 255, 0.1),
+        0 8px 32px rgba(0, 0, 0, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      position: relative;
+      overflow: hidden;
+      cursor: pointer;
+      opacity: 0;
+      transform: translateY(20px);
+      animation: slideIn 0.4s ease-out 0.3s forwards;
+    }
+
+    @keyframes slideIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Name plate */
+    .name-plate {
+      position: absolute;
+      top: -1px;
+      left: 24px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      padding: 6px 20px;
+      border-radius: 0 0 8px 8px;
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    }
+
+    /* Text area */
+    .text-area {
+      padding: 44px 28px 20px 28px;
+      min-height: 90px;
+    }
+
+    .text-content {
+      color: #e2e8f0;
+      font-size: 17px;
+      line-height: 1.7;
+      letter-spacing: 0.2px;
+    }
+
+    /* Blinking cursor */
+    .cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      background: #8b5cf6;
+      margin-left: 2px;
+      vertical-align: text-bottom;
+      animation: blink 0.8s step-end infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* Continue indicator */
+    .continue-indicator {
+      text-align: right;
+      padding: 0 24px 12px 0;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .continue-indicator.visible { opacity: 1; }
+    .continue-indicator span {
+      color: rgba(139, 92, 246, 0.7);
+      font-size: 12px;
+      letter-spacing: 1px;
+    }
+    .continue-indicator .arrow {
+      display: inline-block;
+      animation: bounce 1s ease-in-out infinite;
+    }
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(3px); }
+    }
+
+    /* Corner accents */
+    .chatbox::before, .chatbox::after {
+      content: '';
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      border-color: rgba(139, 92, 246, 0.4);
+      border-style: solid;
+    }
+    .chatbox::before {
+      top: 6px; right: 6px;
+      border-width: 2px 2px 0 0;
+      border-radius: 0 6px 0 0;
+    }
+    .chatbox::after {
+      bottom: 6px; left: 6px;
+      border-width: 0 0 2px 2px;
+      border-radius: 0 0 0 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="chatbox" id="chatbox">
+    <div class="name-plate" id="namePlate">System</div>
+    <div class="text-area">
+      <div class="text-content" id="textContent"><span class="cursor"></span></div>
+    </div>
+    <div class="continue-indicator" id="continueIndicator">
+      <span>CLICK <span class="arrow">&#9660;</span></span>
+    </div>
+  </div>
+
+  <script src="dist/chatbox.js"></script>
+</body>
+</html>

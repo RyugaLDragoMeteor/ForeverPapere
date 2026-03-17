@@ -13,6 +13,12 @@ Interactive live wallpaper engine for Windows. Renders a web-based particle anim
 | [Portable .exe](https://github.com/RyugaLDragoMeteor/ForeverPapere/releases/latest/download/ForeverPapere-1.0.0-portable.exe) | No install needed — just run it |
 | [Installer .exe](https://github.com/RyugaLDragoMeteor/ForeverPapere/releases/latest) | Installs with shortcuts |
 
+### Portable vs Installer
+
+**Portable exe** is a single standalone file. Double-click it anywhere and it runs immediately — no installation, no registry entries, no Start Menu shortcuts. Delete the file and it's completely gone. Best for trying it out quickly or running from a USB drive.
+
+**Installer exe** is an NSIS setup wizard. It installs to your Program Files directory, creates a Start Menu shortcut, and registers an uninstaller in Windows Settings so you can remove it cleanly. Best if you want ForeverPapere as a permanent part of your setup.
+
 ## Usage
 
 1. Run `ForeverPapere.exe`
