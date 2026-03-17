@@ -1,0 +1,21 @@
+{
+  "name": "wallpaper-mambo",
+  "version": "1.0.0",
+  "main": "dist/electron/main.js",
+  "scripts": {
+    "build:web": "esbuild src/main.ts --bundle --outfile=dist/main.js",
+    "build:electron": "esbuild src/electron/main.ts src/electron/preload.ts --bundle --platform=node --external:electron --external:koffi --external:./wallpaper-native --outdir=dist/electron && esbuild src/electron/wallpaper-native.ts --bundle --platform=node --external:koffi --outfile=dist/electron/wallpaper-native.js",
+    "build": "npm run build:web && npm run build:electron",
+    "start": "npm run build && electron .",
+    "stop": "node -e \"try{require('child_process').execSync('taskkill /f /im electron.exe')}catch(e){}\"",
+    "dev": "npm run build && electron ."
+  },
+  "dependencies": {
+    "koffi": "^2.9.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}
