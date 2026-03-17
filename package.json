@@ -1,21 +1,60 @@
 {
-  "name": "wallpaper-mambo",
+  "name": "forever-papere",
   "version": "1.0.0",
+  "description": "Interactive desktop wallpaper engine for Windows",
   "main": "dist/electron/main.js",
+  "author": "RyugaLDragoMeteor",
+  "license": "MIT",
   "scripts": {
     "build:web": "esbuild src/main.ts --bundle --outfile=dist/main.js",
     "build:electron": "esbuild src/electron/main.ts src/electron/preload.ts --bundle --platform=node --external:electron --external:koffi --external:./wallpaper-native --outdir=dist/electron && esbuild src/electron/wallpaper-native.ts --bundle --platform=node --external:koffi --outfile=dist/electron/wallpaper-native.js",
     "build": "npm run build:web && npm run build:electron",
     "start": "npm run build && electron .",
     "stop": "node -e \"try{require('child_process').execSync('taskkill /f /im electron.exe')}catch(e){}\"",
-    "dev": "npm run build && electron ."
+    "dev": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "koffi": "^2.9.0"
   },
   "devDependencies": {
     "electron": "^33.0.0",
+    "electron-builder": "^25.1.0",
     "esbuild": "^0.20.0",
     "typescript": "^5.4.0"
+  },
+  "build": {
+    "appId": "com.foreverpapere.app",
+    "productName": "ForeverPapere",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "index.html",
+      "node_modules/koffi/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": null
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "shortcutName": "ForeverPapere"
+    },
+    "portable": {
+      "artifactName": "ForeverPapere-${version}-portable.exe"
+    }
   }
 }

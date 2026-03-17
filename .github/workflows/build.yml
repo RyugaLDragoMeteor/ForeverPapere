@@ -1,0 +1,78 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app
+        run: npm run build
+
+      - name: Package .exe
+        run: npx electron-builder --win --publish never
+
+      - name: Upload portable exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: ForeverPapere-portable
+          path: release/ForeverPapere-*-portable.exe
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ForeverPapere-installer
+          path: release/ForeverPapere Setup*.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.sha.outputs.short }}
+          name: Build ${{ steps.sha.outputs.short }}
+          body: |
+            Automated build from commit ${{ github.sha }}
+
+            **Downloads:**
+            - **Portable exe** — no install, just run it
+            - **Installer** — installs to your system with shortcuts
+
+            Press `Ctrl+Alt+Q` to quit and restore your normal wallpaper.
+          files: |
+            artifacts/ForeverPapere-portable/*
+            artifacts/ForeverPapere-installer/*
+          draft: false
+          prerelease: false
