@@ -16,14 +16,15 @@ interface DialogueLine {
 }
 
 // Get config from main process
-const config = window.chatboxAPI?.getConfig() ?? { position: "center", imagesDir: "" };
+const config = window.chatboxAPI?.getConfig() ?? { position: "center", imagesDir: "", spriteFile: "" };
+const sprite = config.spriteFile || "";
 
 const script: DialogueLine[] = [
-  { name: "System", text: "ForeverPapere is now running.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
-  { name: "System", text: "Your desktop is alive with particles that react to your mouse.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
-  { name: "System", text: "Click and hold anywhere on the desktop for a burst effect.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
-  { name: "System", text: "Press Ctrl+Alt+Q to quit. Ctrl+Alt+H to toggle this chatbox.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
-  { name: "System", text: "Right-click the tray icon to change chatbox position or re-show this box.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
+  { name: "System", text: "ForeverPapere is now running.", sprite },
+  { name: "System", text: "Your desktop is alive with particles that react to your mouse.", sprite },
+  { name: "System", text: "Click and hold anywhere on the desktop for a burst effect.", sprite },
+  { name: "System", text: "Press Ctrl+Alt+Q to quit. Ctrl+Alt+H to toggle this chatbox.", sprite },
+  { name: "System", text: "Right-click the tray icon to change chatbox position or re-show this box.", sprite },
   { name: "System", text: "Enjoy your new wallpaper!" },
 ];
 

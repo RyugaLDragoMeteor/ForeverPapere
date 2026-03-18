@@ -218,9 +218,14 @@ ipcMain.on("wallpaper-get-config", (event) => {
 });
 
 ipcMain.on("chatbox-get-config", (event) => {
+  // Find the first character sprite in the DB
+  const firstImage = getAllMedia("image", "uploaded")[0];
+  const spriteFile = firstImage ? path.basename(firstImage.filepath) : "";
+
   event.returnValue = {
     position: chatboxPosition,
     imagesDir: IMAGES_DIR,
+    spriteFile,
   };
 });
 
@@ -293,11 +298,11 @@ ipcMain.on("prompt-submit", async (_e, opts: {
   let characterId: number | undefined;
 
   if (opts.source === "character") {
-    const charImages = getAllMedia("image").filter((r) => r.tags.includes("character"));
-    if (charImages.length > 0) {
-      sourceImagePath = charImages[0].filepath;
-      sourceImageId = charImages[0].id;
-      characterId = charImages[0].character_id || undefined;
+    const firstImage = getAllMedia("image", "uploaded")[0];
+    if (firstImage) {
+      sourceImagePath = firstImage.filepath;
+      sourceImageId = firstImage.id;
+      characterId = firstImage.character_id || undefined;
     }
   }
 
