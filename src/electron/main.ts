@@ -157,28 +157,26 @@ ipcMain.on("chatbox-reshow", () => {
 
 // ── Dev vs production paths ──────────────────────────────────
 const isDev = !app.isPackaged;
-const DEV_VIDEOS = path.join(__dirname, "..", "..", "src", "videos");
-const DEV_IMAGES = path.join(__dirname, "..", "..", "src", "images");
 
 // ── First-launch migration ───────────────────────────────────
-// Copy bundled videos/images to app data directory and register in DB
+// Dev: copies from src/images + src/videos into %APPDATA%/media/
+// Prod: copies from bundled/images + bundled/videos into %APPDATA%/media/
 function migrateBundledMedia() {
-  if (isDev) {
-    console.log("[forever-papere] Dev mode — using src/images and src/videos directly");
-    return;
-  }
-
-  const bundledVideos = path.join(__dirname, "..", "..", "bundled", "videos");
-  const bundledImages = path.join(__dirname, "..", "..", "bundled", "images");
-
-  // Check if we already migrated (any media in DB means we did)
+  // Skip if DB already has entries (not first launch)
   const existing = getAllMedia();
   if (existing.length > 0) {
     console.log("[forever-papere] Media DB has entries, skipping migration");
     return;
   }
 
-  console.log("[forever-papere] First launch — migrating bundled media...");
+  const bundledVideos = isDev
+    ? path.join(__dirname, "..", "..", "src", "videos")
+    : path.join(__dirname, "..", "..", "bundled", "videos");
+  const bundledImages = isDev
+    ? path.join(__dirname, "..", "..", "src", "images")
+    : path.join(__dirname, "..", "..", "bundled", "images");
+
+  console.log(`[forever-papere] First launch — migrating from ${isDev ? "src/" : "bundled/"}...`);
 
   // Migrate videos
   const videoExts = [".mp4", ".webm", ".mkv", ".mov", ".avi"];
@@ -213,40 +211,16 @@ function migrateBundledMedia() {
 }
 
 ipcMain.on("wallpaper-get-config", (event) => {
-  let videoFile = "";
-
-  if (isDev) {
-    // Dev mode: use src/videos directly
-    try {
-      const videoExts = [".mp4", ".webm", ".mkv", ".mov", ".avi"];
-      const found = fs.readdirSync(DEV_VIDEOS)
-        .find((f) => videoExts.includes(path.extname(f).toLowerCase()));
-      if (found) videoFile = path.join(DEV_VIDEOS, found);
-    } catch (_) {}
-  } else {
-    // Production: check DB, then fall back to bundled
-    const record = getDefaultWallpaper();
-    if (record) {
-      videoFile = record.filepath;
-    } else {
-      const bundledDir = path.join(__dirname, "..", "..", "bundled", "videos");
-      try {
-        const videoExts = [".mp4", ".webm", ".mkv", ".mov", ".avi"];
-        const found = fs.readdirSync(bundledDir)
-          .find((f) => videoExts.includes(path.extname(f).toLowerCase()));
-        if (found) videoFile = path.join(bundledDir, found);
-      } catch (_) {}
-    }
-  }
-
+  const record = getDefaultWallpaper();
+  const videoFile = record?.filepath || "";
   console.log(`[forever-papere] Wallpaper: ${videoFile || "none (particles)"}`);
-  event.returnValue = { videosDir: isDev ? DEV_VIDEOS : VIDEOS_DIR, videoFile };
+  event.returnValue = { videosDir: VIDEOS_DIR, videoFile };
 });
 
 ipcMain.on("chatbox-get-config", (event) => {
   event.returnValue = {
     position: chatboxPosition,
-    imagesDir: isDev ? DEV_IMAGES : IMAGES_DIR,
+    imagesDir: IMAGES_DIR,
   };
 });
 
@@ -300,14 +274,13 @@ ipcMain.on("prompt-cancel", () => {
 });
 
 ipcMain.on("prompt-get-config", (event) => {
-  const imagesDir = isDev ? DEV_IMAGES : IMAGES_DIR;
   let characterImages: string[] = [];
   try {
     const imgExts = [".png", ".jpg", ".jpeg", ".webp"];
-    characterImages = fs.readdirSync(imagesDir)
+    characterImages = fs.readdirSync(IMAGES_DIR)
       .filter((f) => imgExts.includes(path.extname(f).toLowerCase()));
   } catch (_) { /* no images dir */ }
-  event.returnValue = { imagesDir, characterImages };
+  event.returnValue = { imagesDir: IMAGES_DIR, characterImages };
 });
 
 ipcMain.on("prompt-submit", async (_e, opts: {
@@ -320,22 +293,11 @@ ipcMain.on("prompt-submit", async (_e, opts: {
   let characterId: number | undefined;
 
   if (opts.source === "character") {
-    if (isDev) {
-      // Dev mode: use src/images directly
-      try {
-        const imgExts = [".png", ".jpg", ".jpeg", ".webp"];
-        const found = fs.readdirSync(DEV_IMAGES)
-          .find((f) => imgExts.includes(path.extname(f).toLowerCase()));
-        if (found) sourceImagePath = path.join(DEV_IMAGES, found);
-      } catch (_) {}
-    } else {
-      // Production: find character sprite from DB
-      const charImages = getAllMedia("image").filter((r) => r.tags.includes("character"));
-      if (charImages.length > 0) {
-        sourceImagePath = charImages[0].filepath;
-        sourceImageId = charImages[0].id;
-        characterId = charImages[0].character_id || undefined;
-      }
+    const charImages = getAllMedia("image").filter((r) => r.tags.includes("character"));
+    if (charImages.length > 0) {
+      sourceImagePath = charImages[0].filepath;
+      sourceImageId = charImages[0].id;
+      characterId = charImages[0].character_id || undefined;
     }
   }
 
