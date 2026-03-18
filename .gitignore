@@ -3,3 +3,10 @@ dist/
 build/
 release/
 *.log
+
+# Video files (too large for git — users add their own)
+src/videos/*.mp4
+src/videos/*.webm
+src/videos/*.mkv
+src/videos/*.mov
+src/videos/*.avi

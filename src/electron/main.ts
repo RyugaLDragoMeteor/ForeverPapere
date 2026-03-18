@@ -3,6 +3,7 @@
 
 import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, nativeImage } from "electron";
 import * as path from "path";
+import * as fs from "fs";
 
 function getNative(): typeof import("./wallpaper-native") {
   return require("./wallpaper-native");
@@ -16,8 +17,8 @@ let tray: Tray | null = null;
 type ChatboxPosition = "left" | "center" | "right";
 let chatboxPosition: ChatboxPosition = "center";
 const CHATBOX_WIDTH = 900;
-const CHATBOX_HEIGHT = 180;
-const CHATBOX_MARGIN = 40;
+const CHATBOX_HEIGHT = 520; // taller to fit character sprite above text box
+const CHATBOX_MARGIN = 20;
 
 // ── Chatbox positioning ──────────────────────────────────────
 function getChatboxBounds() {
@@ -135,6 +136,33 @@ ipcMain.on("chatbox-reshow", () => {
   createChatboxWindow();
 });
 
+ipcMain.on("wallpaper-get-config", (event) => {
+  const videosDir = path.join(__dirname, "..", "..", "src", "videos");
+  let videoFile = "";
+
+  try {
+    const videoExts = [".mp4", ".webm", ".mkv", ".mov", ".avi"];
+    const files = fs.readdirSync(videosDir);
+    const found = files.find((f) => videoExts.includes(path.extname(f).toLowerCase()));
+    if (found) {
+      videoFile = path.join(videosDir, found);
+    }
+  } catch (_) {
+    // No videos directory or can't read it
+  }
+
+  console.log(`[forever-papere] Videos dir: ${videosDir}, found: ${videoFile || "none (using particle fallback)"}`);
+  event.returnValue = { videosDir, videoFile };
+});
+
+ipcMain.on("chatbox-get-config", (event) => {
+  const imagesDir = path.join(__dirname, "..", "..", "src", "images");
+  event.returnValue = {
+    position: chatboxPosition,
+    imagesDir,
+  };
+});
+
 // ── System tray ──────────────────────────────────────────────
 function rebuildTrayMenu() {
   if (!tray) return;
@@ -235,7 +263,16 @@ app.on("ready", () => {
     app.quit();
   });
 
-  console.log("[forever-papere] Running! Press Ctrl+Alt+Q to quit.");
+  // Ctrl+Alt+H toggles chatbox
+  globalShortcut.register("CommandOrControl+Alt+H", () => {
+    if (chatboxWindow && !chatboxWindow.isDestroyed()) {
+      chatboxWindow.close();
+    } else {
+      createChatboxWindow();
+    }
+  });
+
+  console.log("[forever-papere] Running! Ctrl+Alt+H = toggle chatbox, Ctrl+Alt+Q = quit.");
 });
 
 app.on("will-quit", () => {

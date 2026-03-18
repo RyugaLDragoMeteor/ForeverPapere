@@ -1,9 +1,10 @@
-// VN-style chatbox — typewriter text with click-to-advance
+// VN-style chatbox — typewriter text with character sprite + click-to-advance
 
 declare global {
   interface Window {
     chatboxAPI: {
       dismiss: () => void;
+      getConfig: () => { position: string; imagesDir: string };
     };
   }
 }
@@ -11,14 +12,18 @@ declare global {
 interface DialogueLine {
   name: string;
   text: string;
+  sprite?: string; // filename in images dir (or empty to hide sprite)
 }
 
+// Get config from main process
+const config = window.chatboxAPI?.getConfig() ?? { position: "center", imagesDir: "" };
+
 const script: DialogueLine[] = [
-  { name: "System", text: "ForeverPapere is now running." },
-  { name: "System", text: "Your desktop is alive with particles that react to your mouse." },
-  { name: "System", text: "Click and hold anywhere on the desktop for a burst effect." },
-  { name: "System", text: "Press Ctrl+Alt+Q at any time to quit and restore your wallpaper." },
-  { name: "System", text: "Right-click the tray icon to change chatbox position or re-show this box." },
+  { name: "System", text: "ForeverPapere is now running.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
+  { name: "System", text: "Your desktop is alive with particles that react to your mouse.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
+  { name: "System", text: "Click and hold anywhere on the desktop for a burst effect.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
+  { name: "System", text: "Press Ctrl+Alt+Q to quit. Ctrl+Alt+H to toggle this chatbox.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
+  { name: "System", text: "Right-click the tray icon to change chatbox position or re-show this box.", sprite: "fate-stay-night-shirou-emiya-archer-saber-shirō-anime-0a8727432e407efca3118284c67f677f.png" },
   { name: "System", text: "Enjoy your new wallpaper!" },
 ];
 
@@ -29,12 +34,32 @@ const textEl = document.getElementById("textContent")!;
 const nameEl = document.getElementById("namePlate")!;
 const indicatorEl = document.getElementById("continueIndicator")!;
 const chatboxEl = document.getElementById("chatbox")!;
+const spriteContainer = document.getElementById("characterSprite")!;
+const spriteImg = document.getElementById("spriteImg") as HTMLImageElement;
 
 let currentLine = 0;
 let isTyping = false;
 let skipTyping = false;
 let fullText = "";
 let charIndex = 0;
+
+// Apply position class to sprite
+function applySpritePosition() {
+  spriteContainer.classList.remove("pos-left", "pos-center", "pos-right");
+  spriteContainer.classList.add(`pos-${config.position}`);
+}
+
+function showSprite(filename?: string) {
+  if (!filename) {
+    spriteContainer.style.display = "none";
+    return;
+  }
+
+  const imgPath = `${config.imagesDir}/${filename}`;
+  spriteImg.src = imgPath;
+  spriteContainer.style.display = "block";
+  applySpritePosition();
+}
 
 function showLine(line: DialogueLine) {
   nameEl.textContent = line.name;
@@ -44,6 +69,8 @@ function showLine(line: DialogueLine) {
   skipTyping = false;
   indicatorEl.classList.remove("visible");
   textEl.innerHTML = '<span class="cursor"></span>';
+
+  showSprite(line.sprite);
   typeNext();
 }
 
@@ -63,7 +90,6 @@ function typeNext() {
 
 function advance() {
   if (isTyping) {
-    // Click while typing → skip to end of line
     skipTyping = true;
     return;
   }
@@ -71,7 +97,6 @@ function advance() {
   currentLine++;
 
   if (currentLine >= script.length) {
-    // All lines done → dismiss
     window.chatboxAPI?.dismiss();
     return;
   }
@@ -79,10 +104,11 @@ function advance() {
   showLine(script[currentLine]);
 }
 
-// Click anywhere on chatbox to advance
+// Click to advance
 chatboxEl.addEventListener("click", advance);
+spriteContainer.addEventListener("click", advance);
 
-// Spacebar or Enter also advance
+// Spacebar / Enter also advance
 window.addEventListener("keydown", (e) => {
   if (e.key === " " || e.key === "Enter") {
     e.preventDefault();
@@ -90,5 +116,5 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-// Start first line
+// Start
 showLine(script[0]);

@@ -33,6 +33,8 @@
       "dist/**/*",
       "index.html",
       "chatbox.html",
+      "src/images/**/*",
+      "src/videos/**/*",
       "node_modules/koffi/**/*"
     ],
     "win": {
