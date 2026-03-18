@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>xAI API Key</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #e0e0ff;
+      padding: 20px;
+      -webkit-app-region: drag;
+    }
+    h2 { font-size: 16px; margin-bottom: 8px; color: #b8b8ff; }
+    p { font-size: 12px; color: #8888bb; margin-bottom: 14px; }
+    .field { margin-bottom: 12px; -webkit-app-region: no-drag; }
+    label { display: block; font-size: 12px; color: #8888bb; margin-bottom: 4px; }
+    input {
+      width: 100%; padding: 8px 10px;
+      background: #16213e; border: 1px solid #333366;
+      border-radius: 6px; color: #e0e0ff; font-size: 13px; outline: none;
+    }
+    input:focus { border-color: #6366f1; }
+    .buttons { display: flex; gap: 10px; margin-top: 16px; -webkit-app-region: no-drag; }
+    button {
+      flex: 1; padding: 8px; border: none; border-radius: 6px;
+      font-size: 13px; cursor: pointer; font-weight: 600;
+    }
+    .btn-save { background: #6366f1; color: white; }
+    .btn-save:hover { background: #5558e6; }
+    .btn-cancel { background: #333366; color: #b8b8ff; }
+    .btn-cancel:hover { background: #444488; }
+  </style>
+</head>
+<body>
+  <h2>xAI API Key</h2>
+  <p>Get your key from <strong>console.x.ai</strong>. You get $25/month free credits.</p>
+  <div class="field">
+    <label>API Key</label>
+    <input type="password" id="apikey" placeholder="xai-..." />
+  </div>
+  <div class="buttons">
+    <button class="btn-cancel" id="cancelBtn">Cancel</button>
+    <button class="btn-save" id="saveBtn">Save</button>
+  </div>
+  <script>
+    const { ipcRenderer } = require("electron");
+    document.getElementById("cancelBtn").addEventListener("click", () => ipcRenderer.send("apikey-cancel"));
+    document.getElementById("saveBtn").addEventListener("click", () => {
+      const key = document.getElementById("apikey").value.trim();
+      if (key) ipcRenderer.send("apikey-save", key);
+    });
+  </script>
+</body>
+</html>

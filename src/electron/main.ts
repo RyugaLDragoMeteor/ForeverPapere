@@ -4,6 +4,7 @@
 import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, nativeImage } from "electron";
 import * as path from "path";
 import * as fs from "fs";
+import { generateImage, generateVideo, saveApiKey, hasApiKey } from "./xai-api";
 
 function getNative(): typeof import("./wallpaper-native") {
   return require("./wallpaper-native");
@@ -11,6 +12,8 @@ function getNative(): typeof import("./wallpaper-native") {
 
 let mainWindow: BrowserWindow | null = null;
 let chatboxWindow: BrowserWindow | null = null;
+let promptWindow: BrowserWindow | null = null;
+let apikeyWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 
 // Settings
@@ -176,6 +179,92 @@ ipcMain.on("chatbox-get-config", (event) => {
   };
 });
 
+// ── xAI Generation dialogs ───────────────────────────────────
+function openApiKeyDialog() {
+  if (apikeyWindow && !apikeyWindow.isDestroyed()) { apikeyWindow.focus(); return; }
+  apikeyWindow = new BrowserWindow({
+    width: 400, height: 200, frame: false, resizable: false,
+    alwaysOnTop: true, skipTaskbar: false,
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
+  });
+  apikeyWindow.loadFile(path.join(__dirname, "..", "..", "apikey-dialog.html"));
+  apikeyWindow.on("closed", () => { apikeyWindow = null; });
+}
+
+function openPromptDialog() {
+  if (!hasApiKey()) { openApiKeyDialog(); return; }
+  if (promptWindow && !promptWindow.isDestroyed()) { promptWindow.focus(); return; }
+  promptWindow = new BrowserWindow({
+    width: 440, height: 380, frame: false, resizable: false,
+    alwaysOnTop: true, skipTaskbar: false,
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
+  });
+  promptWindow.loadFile(path.join(__dirname, "..", "..", "prompt-dialog.html"));
+  promptWindow.on("closed", () => { promptWindow = null; });
+}
+
+// Tell the wallpaper renderer to reload with a new media file
+function reloadWallpaper(filePath: string) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const fileUrl = `file:///${filePath.replace(/\\/g, "/")}`;
+    mainWindow.webContents.send("wallpaper-reload", fileUrl);
+    console.log("[forever-papere] Reloading wallpaper:", fileUrl);
+  }
+}
+
+// ── xAI IPC handlers ────────────────────────────────────────
+ipcMain.on("apikey-save", (_e, key: string) => {
+  saveApiKey(key);
+  if (apikeyWindow && !apikeyWindow.isDestroyed()) apikeyWindow.close();
+  rebuildTrayMenu();
+  console.log("[forever-papere] API key saved");
+});
+
+ipcMain.on("apikey-cancel", () => {
+  if (apikeyWindow && !apikeyWindow.isDestroyed()) apikeyWindow.close();
+});
+
+ipcMain.on("prompt-cancel", () => {
+  if (promptWindow && !promptWindow.isDestroyed()) promptWindow.close();
+});
+
+ipcMain.on("prompt-submit", async (_e, opts: {
+  prompt: string; type: string; aspectRatio: string;
+  duration: number; resolution: string;
+}) => {
+  const outputDir = path.join(__dirname, "..", "..", "src",
+    opts.type === "video" ? "videos" : "images");
+
+  try {
+    let result;
+    if (opts.type === "video") {
+      if (promptWindow) promptWindow.webContents.send("generation-status", "Generating video... this may take several minutes.");
+      result = await generateVideo({
+        prompt: opts.prompt,
+        duration: opts.duration,
+        aspectRatio: opts.aspectRatio,
+        resolution: opts.resolution,
+      }, outputDir);
+    } else {
+      if (promptWindow) promptWindow.webContents.send("generation-status", "Generating image...");
+      result = await generateImage({
+        prompt: opts.prompt,
+        aspectRatio: opts.aspectRatio,
+      }, outputDir);
+    }
+
+    if (result.success && result.filePath) {
+      if (promptWindow) promptWindow.webContents.send("generation-success", "Done! Applying as wallpaper...");
+      reloadWallpaper(result.filePath);
+    } else {
+      if (promptWindow) promptWindow.webContents.send("generation-error", result.error || "Unknown error");
+    }
+  } catch (err: any) {
+    console.error("[xai] Generation error:", err);
+    if (promptWindow) promptWindow.webContents.send("generation-error", err.message || "Generation failed");
+  }
+});
+
 // ── System tray ──────────────────────────────────────────────
 function rebuildTrayMenu() {
   if (!tray) return;
@@ -209,6 +298,15 @@ function rebuildTrayMenu() {
     {
       label: "Show Chatbox",
       click: () => createChatboxWindow(),
+    },
+    { type: "separator" },
+    {
+      label: "Generate Wallpaper (xAI)",
+      click: () => openPromptDialog(),
+    },
+    {
+      label: hasApiKey() ? "Change xAI API Key" : "Set xAI API Key",
+      click: () => openApiKeyDialog(),
     },
     { type: "separator" },
     {

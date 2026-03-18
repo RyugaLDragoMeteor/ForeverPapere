@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Generate Wallpaper</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #e0e0ff;
+      padding: 20px;
+      user-select: none;
+      -webkit-app-region: drag;
+    }
+    h2 {
+      font-size: 16px;
+      margin-bottom: 14px;
+      color: #b8b8ff;
+    }
+    .field {
+      margin-bottom: 12px;
+      -webkit-app-region: no-drag;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: #8888bb;
+      margin-bottom: 4px;
+    }
+    input, textarea, select {
+      width: 100%;
+      padding: 8px 10px;
+      background: #16213e;
+      border: 1px solid #333366;
+      border-radius: 6px;
+      color: #e0e0ff;
+      font-size: 13px;
+      outline: none;
+    }
+    input:focus, textarea:focus, select:focus {
+      border-color: #6366f1;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 60px;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+    }
+    .row .field { flex: 1; }
+    .buttons {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+      -webkit-app-region: no-drag;
+    }
+    button {
+      flex: 1;
+      padding: 8px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .btn-generate {
+      background: #6366f1;
+      color: white;
+    }
+    .btn-generate:hover { background: #5558e6; }
+    .btn-cancel {
+      background: #333366;
+      color: #b8b8ff;
+    }
+    .btn-cancel:hover { background: #444488; }
+    .status {
+      margin-top: 12px;
+      font-size: 12px;
+      color: #8888bb;
+      min-height: 16px;
+    }
+    .status.error { color: #ff6b6b; }
+    .status.success { color: #6bff8b; }
+  </style>
+</head>
+<body>
+  <h2 id="title">Generate Wallpaper</h2>
+
+  <div class="field">
+    <label>Prompt</label>
+    <textarea id="prompt" placeholder="Describe the wallpaper you want..."></textarea>
+  </div>
+
+  <div class="row">
+    <div class="field">
+      <label>Type</label>
+      <select id="type">
+        <option value="image">Image</option>
+        <option value="video">Video</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Aspect Ratio</label>
+      <select id="aspect">
+        <option value="16:9">16:9</option>
+        <option value="9:16">9:16</option>
+        <option value="1:1">1:1</option>
+        <option value="4:3">4:3</option>
+        <option value="3:2">3:2</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="row" id="videoOptions" style="display:none;">
+    <div class="field">
+      <label>Duration (seconds)</label>
+      <select id="duration">
+        <option value="5">5s</option>
+        <option value="8">8s</option>
+        <option value="10">10s</option>
+        <option value="15">15s</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Resolution</label>
+      <select id="resolution">
+        <option value="480p">480p (faster)</option>
+        <option value="720p">720p</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="buttons">
+    <button class="btn-cancel" id="cancelBtn">Cancel</button>
+    <button class="btn-generate" id="generateBtn">Generate</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <script>
+    const { ipcRenderer } = require("electron");
+
+    const typeEl = document.getElementById("type");
+    const videoOpts = document.getElementById("videoOptions");
+    const statusEl = document.getElementById("status");
+    const generateBtn = document.getElementById("generateBtn");
+    const cancelBtn = document.getElementById("cancelBtn");
+
+    typeEl.addEventListener("change", () => {
+      videoOpts.style.display = typeEl.value === "video" ? "flex" : "none";
+    });
+
+    cancelBtn.addEventListener("click", () => {
+      ipcRenderer.send("prompt-cancel");
+    });
+
+    generateBtn.addEventListener("click", () => {
+      const prompt = document.getElementById("prompt").value.trim();
+      if (!prompt) {
+        statusEl.textContent = "Please enter a prompt.";
+        statusEl.className = "status error";
+        return;
+      }
+
+      generateBtn.disabled = true;
+      generateBtn.textContent = "Generating...";
+      statusEl.textContent = typeEl.value === "video"
+        ? "Generating video... this may take a few minutes."
+        : "Generating image...";
+      statusEl.className = "status";
+
+      ipcRenderer.send("prompt-submit", {
+        prompt,
+        type: typeEl.value,
+        aspectRatio: document.getElementById("aspect").value,
+        duration: parseInt(document.getElementById("duration").value),
+        resolution: document.getElementById("resolution").value,
+      });
+    });
+
+    ipcRenderer.on("generation-status", (_e, msg) => {
+      statusEl.textContent = msg;
+      statusEl.className = "status";
+    });
+
+    ipcRenderer.on("generation-error", (_e, msg) => {
+      statusEl.textContent = msg;
+      statusEl.className = "status error";
+      generateBtn.disabled = false;
+      generateBtn.textContent = "Generate";
+    });
+
+    ipcRenderer.on("generation-success", (_e, msg) => {
+      statusEl.textContent = msg;
+      statusEl.className = "status success";
+      setTimeout(() => ipcRenderer.send("prompt-cancel"), 2000);
+    });
+  </script>
+</body>
+</html>

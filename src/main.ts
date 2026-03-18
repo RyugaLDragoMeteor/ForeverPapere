@@ -12,50 +12,88 @@ function resize() {
 resize();
 window.addEventListener("resize", resize);
 
-// ── Check for video ──────────────────────────────────────────
+// ── Load media ──────────────────────────────────────────────
+let currentAnimFrame: number | null = null;
+
+function loadMedia(url: string) {
+  // Cancel any existing animation loop
+  if (currentAnimFrame !== null) cancelAnimationFrame(currentAnimFrame);
+
+  const isVideo = /\.(mp4|webm|mkv|mov|avi)(\?|$)/i.test(url);
+  const isImage = /\.(png|jpg|jpeg|webp|gif|bmp)(\?|$)/i.test(url);
+
+  if (isVideo) {
+    console.log("[wallpaper] Loading video:", url);
+    const video = document.createElement("video");
+    video.src = url;
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+
+    video.addEventListener("error", () => {
+      console.log("[wallpaper] Video error, falling back to particles");
+      startParticles();
+    });
+
+    video.play().then(() => {
+      console.log("[wallpaper] Video playing, rendering to canvas");
+      startVideoLoop(video);
+    }).catch((err) => {
+      console.log("[wallpaper] Video play failed:", err);
+      startParticles();
+    });
+  } else if (isImage) {
+    console.log("[wallpaper] Loading image:", url);
+    const img = new Image();
+    img.onload = () => {
+      // Cover-fit image
+      const ia = img.width / img.height;
+      const ca = W / H;
+      let dw: number, dh: number, dx: number, dy: number;
+      if (ca > ia) { dw = W; dh = W / ia; dx = 0; dy = (H - dh) / 2; }
+      else { dh = H; dw = H * ia; dx = (W - dw) / 2; dy = 0; }
+      ctx.drawImage(img, dx, dy, dw, dh);
+    };
+    img.onerror = () => {
+      console.log("[wallpaper] Image error, falling back to particles");
+      startParticles();
+    };
+    img.src = url;
+  } else {
+    console.log("[wallpaper] Unknown media type, using particles");
+    startParticles();
+  }
+}
+
 const videoUrl = (window as any).wallpaperConfig?.videoFile;
-
 if (videoUrl) {
-  console.log("[wallpaper] Loading video:", videoUrl);
-  const video = document.createElement("video");
-  video.src = videoUrl;
-  video.loop = true;
-  video.muted = true;
-  video.playsInline = true;
-
-  video.addEventListener("error", () => {
-    console.log("[wallpaper] Video error, falling back to particles");
-    startParticles();
-  });
-
-  video.play().then(() => {
-    console.log("[wallpaper] Video playing, rendering to canvas");
-    startVideoLoop(video);
-  }).catch((err) => {
-    console.log("[wallpaper] Video play failed:", err);
-    startParticles();
-  });
+  loadMedia(videoUrl);
 } else {
   console.log("[wallpaper] No video, using particles");
   startParticles();
+}
+
+// ── Hot-reload from xAI generation ──────────────────────────
+const ipc = (window as any).wallpaperIPC;
+if (ipc?.onReload) {
+  ipc.onReload((url: string) => {
+    console.log("[wallpaper] Hot-reloading:", url);
+    loadMedia(url);
+  });
 }
 
 // ── Video loop ───────────────────────────────────────────────
 function startVideoLoop(video: HTMLVideoElement) {
   function drawFrame() {
     if (video.readyState >= 2) {
-      // Cover-fit
       const va = video.videoWidth / video.videoHeight;
       const ca = W / H;
       let dw: number, dh: number, dx: number, dy: number;
-      if (ca > va) {
-        dw = W; dh = W / va; dx = 0; dy = (H - dh) / 2;
-      } else {
-        dh = H; dw = H * va; dx = (W - dw) / 2; dy = 0;
-      }
+      if (ca > va) { dw = W; dh = W / va; dx = 0; dy = (H - dh) / 2; }
+      else { dh = H; dw = H * va; dx = (W - dw) / 2; dy = 0; }
       ctx.drawImage(video, dx, dy, dw, dh);
     }
-    requestAnimationFrame(drawFrame);
+    currentAnimFrame = requestAnimationFrame(drawFrame);
   }
   drawFrame();
 }
@@ -129,7 +167,7 @@ function startParticles() {
       ctx.beginPath(); ctx.arc(p.x, p.y, p.radius * 3, 0, Math.PI * 2);
       ctx.fillStyle = `hsla(${hue}, 90%, 65%, 0.08)`; ctx.fill();
     }
-    requestAnimationFrame(loop);
+    currentAnimFrame = requestAnimationFrame(loop);
   }
   loop();
 }
