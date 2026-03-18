@@ -26,7 +26,6 @@ export type MediaSource = "generated" | "uploaded";
 export interface Character {
   id: number;
   name: string;
-  image_id: number | null;  // media record ID of the character's sprite/reference image
   created_at: string;
 }
 
@@ -66,6 +65,10 @@ function load(): MediaStore {
     if (!raw.nextCharacterId) raw.nextCharacterId = 1;
     for (const r of raw.records) {
       if (r.character_id === undefined) r.character_id = null;
+    }
+    // Remove deprecated image_id from characters
+    for (const c of raw.characters) {
+      delete (c as any).image_id;
     }
     store = raw;
   } catch {
@@ -170,12 +173,11 @@ export function deleteMedia(id: number): boolean {
 
 // ── Character operations ─────────────────────────────────────
 
-export function addCharacter(name: string, imageId?: number): Character {
+export function addCharacter(name: string): Character {
   const s = load();
   const character: Character = {
     id: s.nextCharacterId++,
     name,
-    image_id: imageId || null,
     created_at: new Date().toISOString(),
   };
   s.characters.push(character);
@@ -202,12 +204,11 @@ export function getMediaByCharacter(characterId: number): MediaRecord[] {
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
-export function updateCharacter(id: number, updates: { name?: string; imageId?: number }): void {
+export function updateCharacter(id: number, updates: { name?: string }): void {
   const s = load();
   const character = s.characters.find((c) => c.id === id);
   if (character) {
     if (updates.name !== undefined) character.name = updates.name;
-    if (updates.imageId !== undefined) character.image_id = updates.imageId;
     save();
   }
 }
@@ -234,16 +235,16 @@ export function linkMediaToCharacter(mediaId: number, characterId: number): void
   }
 }
 
-/** Get or create a character, auto-linking their sprite image. */
-export function ensureCharacter(name: string, spriteMediaId?: number): Character {
-  const existing = getCharacterByName(name);
-  if (existing) {
-    if (spriteMediaId && !existing.image_id) {
-      updateCharacter(existing.id, { imageId: spriteMediaId });
-    }
-    return existing;
-  }
-  return addCharacter(name, spriteMediaId);
+/** Get or create a character by name. */
+export function ensureCharacter(name: string): Character {
+  return getCharacterByName(name) || addCharacter(name);
+}
+
+/** Get the sprite image for a character (media tagged "character" linked to them). */
+export function getCharacterSprite(characterId: number): MediaRecord | null {
+  return load().records.find(
+    (r) => r.character_id === characterId && r.tags.includes("character")
+  ) || null;
 }
 
 // ── Helpers ─────────────────────────────────────────────────

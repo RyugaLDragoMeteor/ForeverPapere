@@ -193,7 +193,7 @@ function migrateBundledMedia() {
         // Derive character name from filename (strip extension, replace separators)
         const baseName = path.basename(f, path.extname(f));
         const charName = baseName.split(/[-_]/)[0].trim() || baseName;
-        const character = ensureCharacter(charName, record.id);
+        const character = ensureCharacter(charName);
         linkMediaToCharacter(record.id, character.id);
 
         console.log(`[forever-papere] Migrated image: ${f} → character "${character.name}" (id=${character.id})`);
