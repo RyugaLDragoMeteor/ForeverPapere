@@ -44,7 +44,10 @@ function getChatboxBounds() {
 
 // ── Wallpaper window ─────────────────────────────────────────
 function createWallpaperWindow() {
-  const { width, height } = screen.getPrimaryDisplay().size;
+  const display = screen.getPrimaryDisplay();
+  const sf = display.scaleFactor || 1;
+  const width = Math.round(display.workAreaSize.width * sf);
+  const height = Math.round(display.workAreaSize.height * sf);
 
   mainWindow = new BrowserWindow({
     width, height, x: 0, y: 0,
@@ -72,8 +75,12 @@ function createWallpaperWindow() {
     mainWindow.show();
 
     const hwndBuffer = mainWindow.getNativeWindowHandle();
+    const d = screen.getPrimaryDisplay();
+    const sf2 = d.scaleFactor || 1;
+    const sw = Math.round(d.workAreaSize.width * sf2);
+    const sh = Math.round(d.workAreaSize.height * sf2);
     try {
-      const success = getNative().attach(hwndBuffer);
+      const success = getNative().attach(hwndBuffer, sw, sh);
       if (success) console.log("[forever-papere] Wallpaper attached!");
     } catch (err) {
       console.error("[forever-papere] Failed to attach:", err);
@@ -280,6 +287,11 @@ app.on("ready", () => {
 
   console.log("[forever-papere] Running! Ctrl+Alt+H = toggle chatbox, Ctrl+Alt+Q = quit.");
 });
+
+// Handle external kill (taskkill, SIGTERM, etc.)
+process.on("SIGTERM", () => { cleanup(); app.quit(); });
+process.on("SIGINT", () => { cleanup(); app.quit(); });
+process.on("exit", () => { try { getNative().detach(); getNative().reset(); } catch (_) {} });
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();

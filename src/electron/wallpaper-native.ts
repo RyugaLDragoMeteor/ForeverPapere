@@ -103,7 +103,7 @@ function findWorkerW(progman: number): number {
       const defView = Number(FindWindowExA(hwnd, 0, "SHELLDLL_DefView", null));
       if (defView) {
         console.log(`[native] SHELLDLL_DefView found in 0x${hwnd.toString(16)}`);
-        // The WorkerW we want is the next top-level sibling after this window
+        // Classic path: WorkerW is the next top-level sibling
         const worker = Number(FindWindowExA(0, hwnd, "WorkerW", null));
         if (worker) {
           console.log(`[native] WorkerW sibling: 0x${worker.toString(16)}`);
@@ -118,6 +118,24 @@ function findWorkerW(progman: number): number {
 
   EnumWindows(callback, 0);
   koffi.unregister(callback);
+
+  // Win11 26002+ path: WorkerW is a CHILD of Progman, not a sibling.
+  // Look for a WorkerW child of Progman that does NOT contain SHELLDLL_DefView.
+  if (!workerW) {
+    console.log("[native] Trying Win11 26002+ path: WorkerW as child of Progman");
+    let child = Number(FindWindowExA(progman, 0, "WorkerW", null));
+    while (child) {
+      // Skip any WorkerW that contains SHELLDLL_DefView (that's the icons layer)
+      const hasDefView = Number(FindWindowExA(child, 0, "SHELLDLL_DefView", null));
+      if (!hasDefView) {
+        console.log(`[native] Found WorkerW child of Progman: 0x${child.toString(16)}`);
+        workerW = child;
+        break;
+      }
+      // Look for next WorkerW child
+      child = Number(FindWindowExA(progman, child, "WorkerW", null));
+    }
+  }
 
   return workerW;
 }
@@ -154,7 +172,7 @@ function spawnAndFindWorkerW(): { workerW: number; progman: number } {
 
 // ── Public API ───────────────────────────────────────────────
 
-export function attach(hwndBuffer: Buffer): boolean {
+export function attach(hwndBuffer: Buffer, screenWidth?: number, screenHeight?: number): boolean {
   const hwnd = process.arch === "x64"
     ? Number(hwndBuffer.readBigUInt64LE(0))
     : hwndBuffer.readUInt32LE(0);
@@ -173,11 +191,12 @@ export function attach(hwndBuffer: Buffer): boolean {
   savedParent = Number(GetParent(hwnd));
   attachedHwnd = hwnd;
 
-  // Get full virtual screen dimensions (multi-monitor support)
-  const screenX = GetSystemMetrics(SM_XVIRTUALSCREEN);
-  const screenY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-  const screenW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-  const screenH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+  // Use dimensions passed from Electron (which correctly handles DPI scaling)
+  // Fall back to GetSystemMetrics if not provided
+  const screenX = 0;
+  const screenY = 0;
+  const screenW = screenWidth || GetSystemMetrics(SM_CXSCREEN);
+  const screenH = screenHeight || GetSystemMetrics(SM_CYSCREEN);
 
   if (workerW) {
     // ── Best case: WorkerW exists ──
@@ -202,18 +221,17 @@ export function attach(hwndBuffer: Buffer): boolean {
     ShowWindow(hwnd, SW_SHOW);
 
   } else {
-    // ── Fallback: Parent to Progman, then force SHELLDLL_DefView on top ──
-    // On some Windows 11 builds (26100+), 0x052C doesn't create a WorkerW.
-    // We parent to Progman, push ourselves to HWND_BOTTOM, and then
-    // explicitly raise SHELLDLL_DefView above us so desktop icons stay visible.
-    console.log("[native] No WorkerW, parenting to Progman behind SHELLDLL_DefView");
+    // ── Fallback: Don't parent to Progman (Z-order is broken on Win11 26100+).
+    // Instead, keep the window as a top-level window and place it directly
+    // behind Progman in the Z-order. This makes it visible above the desktop
+    // wallpaper but below desktop icons and all other windows.
+    console.log("[native] No WorkerW, parenting to Progman (WS_CHILD)");
     targetParent = progman;
 
-    // Find SHELLDLL_DefView before we parent (we'll need to raise it after)
     const defView = Number(FindWindowExA(progman, 0, "SHELLDLL_DefView", null));
     console.log(`[native] SHELLDLL_DefView: 0x${defView.toString(16)}`);
 
-    // Strip chrome
+    // Use WS_CHILD — same approach that worked for particles
     let style = savedStyle;
     style &= ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
     style |= WS_CHILD | WS_CLIPSIBLINGS;
@@ -225,19 +243,16 @@ export function attach(hwndBuffer: Buffer): boolean {
       WS_EX_TOOLWINDOW | WS_EX_APPWINDOW);
     SetWindowLongPtrA(hwnd, GWL_EXSTYLE, exStyle);
 
-    // Parent our window into Progman
     SetParent(hwnd, progman);
 
-    // Push our window to the very bottom of Progman's child Z-order
-    SetWindowPos(hwnd, HWND_BOTTOM, screenX, screenY, screenW, screenH, SWP_NOACTIVATE);
+    const HWND_TOP = 0;
+    SetWindowPos(hwnd, HWND_TOP, screenX, screenY, screenW, screenH, SWP_NOACTIVATE);
     ShowWindow(hwnd, SW_SHOW);
 
-    // Now explicitly raise SHELLDLL_DefView to the top so icons are visible
     if (defView) {
-      const HWND_TOP = 0;
       SetWindowPos(defView, HWND_TOP, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-      console.log("[native] Raised SHELLDLL_DefView to top");
+      console.log("[native] Raised SHELLDLL_DefView above us");
     }
   }
 
