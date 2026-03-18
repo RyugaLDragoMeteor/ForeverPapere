@@ -2,6 +2,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { net } from "electron";
+import { IMAGES_DIR, VIDEOS_DIR, registerGenerated } from "./media-db";
 
 const API_BASE = "https://api.x.ai/v1";
 
@@ -41,6 +42,7 @@ export interface GenerationResult {
   success: boolean;
   filePath?: string;
   error?: string;
+  dbId?: number;
 }
 
 function getApiKey(): string {
@@ -124,7 +126,7 @@ async function downloadFile(url: string, destPath: string): Promise<void> {
 }
 
 // ── Image Generation (synchronous response) ──────────────────
-export async function generateImage(opts: ImageGenOptions, outputDir: string): Promise<GenerationResult> {
+export async function generateImage(opts: ImageGenOptions): Promise<GenerationResult> {
   const apiKey = getApiKey();
   if (!apiKey) return { success: false, error: "No xAI API key configured" };
 
@@ -174,16 +176,24 @@ export async function generateImage(opts: ImageGenOptions, outputDir: string): P
   const imageUrl = data.data?.[0]?.url;
   if (!imageUrl) return { success: false, error: "No image URL in response" };
 
-  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-  const filePath = path.join(outputDir, `generated_${Date.now()}.png`);
+  const filePath = path.join(IMAGES_DIR, `generated_${Date.now()}.png`);
   await downloadFile(imageUrl, filePath);
 
-  console.log("[xai] Image saved:", filePath);
-  return { success: true, filePath };
+  const record = registerGenerated({
+    filepath: filePath,
+    type: "image",
+    prompt: opts.prompt,
+    model: opts.model || "grok-imagine-image",
+    tags: ["generated", "ai", opts.sourceImagePath ? "edited" : "text-to-image"],
+    aspectRatio: opts.aspectRatio,
+  });
+
+  console.log("[xai] Image saved:", filePath, "db id:", record.id);
+  return { success: true, filePath, dbId: record.id };
 }
 
 // ── Video Generation (async polling) ─────────────────────────
-export async function generateVideo(opts: VideoGenOptions, outputDir: string): Promise<GenerationResult> {
+export async function generateVideo(opts: VideoGenOptions): Promise<GenerationResult> {
   const apiKey = getApiKey();
   if (!apiKey) return { success: false, error: "No xAI API key configured" };
 
@@ -257,11 +267,22 @@ export async function generateVideo(opts: VideoGenOptions, outputDir: string): P
     console.log("[xai] Video status:", result.status);
 
     if (result.status === "done" && result.video?.url) {
-      if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-      const filePath = path.join(outputDir, `generated_${Date.now()}.mp4`);
+      const filePath = path.join(VIDEOS_DIR, `generated_${Date.now()}.mp4`);
       await downloadFile(result.video.url, filePath);
-      console.log("[xai] Video saved:", filePath);
-      return { success: true, filePath };
+
+      const record = registerGenerated({
+        filepath: filePath,
+        type: "video",
+        prompt: opts.prompt,
+        model: "grok-imagine-video",
+        tags: ["generated", "ai", opts.sourceImagePath ? "image-to-video" : "text-to-video"],
+        duration: opts.duration,
+        aspectRatio: opts.aspectRatio,
+        resolution: opts.resolution,
+      });
+
+      console.log("[xai] Video saved:", filePath, "db id:", record.id);
+      return { success: true, filePath, dbId: record.id };
     }
 
     if (result.status === "failed" || result.status === "expired") {
@@ -277,7 +298,6 @@ export async function generateVideo(opts: VideoGenOptions, outputDir: string): P
 // then animates that scene into a looping video.
 export async function generateCharacterVideo(
   opts: VideoGenOptions & { sourceImagePath: string },
-  outputDir: string,
   onStatus?: (msg: string) => void,
 ): Promise<GenerationResult> {
   onStatus?.("Step 1/2: Creating scene with your character...");
@@ -287,7 +307,7 @@ export async function generateCharacterVideo(
     prompt: opts.prompt,
     sourceImagePath: opts.sourceImagePath,
     aspectRatio: opts.aspectRatio || "16:9",
-  }, outputDir);
+  });
 
   if (!imgResult.success || !imgResult.filePath) {
     return { success: false, error: `Image step failed: ${imgResult.error}` };
@@ -303,7 +323,7 @@ export async function generateCharacterVideo(
     aspectRatio: opts.aspectRatio || "16:9",
     resolution: opts.resolution || "720p",
     sourceImagePath: imgResult.filePath,
-  }, outputDir);
+  });
 
   return videoResult;
 }

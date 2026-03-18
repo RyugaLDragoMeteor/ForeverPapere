@@ -33,19 +33,24 @@
       "dist/**/*",
       "index.html",
       "chatbox.html",
-      "src/images/**/*",
-      "src/videos/**/*",
-      "node_modules/koffi/**/*"
+      "bundled/**/*",
+      "node_modules/koffi/**/*",
+      "prompt-dialog.html",
+      "apikey-dialog.html"
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": null

@@ -5,6 +5,7 @@ import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, native
 import * as path from "path";
 import * as fs from "fs";
 import { generateImage, generateVideo, generateCharacterVideo, saveApiKey, hasApiKey } from "./xai-api";
+import { closeDb, importMedia, getAllMedia, getDefaultWallpaper, VIDEOS_DIR, IMAGES_DIR, MEDIA_DIR } from "./media-db";
 
 function getNative(): typeof import("./wallpaper-native") {
   return require("./wallpaper-native");
@@ -154,30 +155,73 @@ ipcMain.on("chatbox-reshow", () => {
   createChatboxWindow();
 });
 
-ipcMain.on("wallpaper-get-config", (event) => {
-  const videosDir = path.join(__dirname, "..", "..", "src", "videos");
-  let videoFile = "";
+// ── First-launch migration ───────────────────────────────────
+// Copy bundled videos/images to app data directory and register in DB
+function migrateBundledMedia() {
+  const bundledVideos = path.join(__dirname, "..", "..", "bundled", "videos");
+  const bundledImages = path.join(__dirname, "..", "..", "bundled", "images");
 
-  try {
-    const videoExts = [".mp4", ".webm", ".mkv", ".mov", ".avi"];
-    const files = fs.readdirSync(videosDir);
-    const found = files.find((f) => videoExts.includes(path.extname(f).toLowerCase()));
-    if (found) {
-      videoFile = path.join(videosDir, found);
-    }
-  } catch (_) {
-    // No videos directory or can't read it
+  // Check if we already migrated (any media in DB means we did)
+  const existing = getAllMedia();
+  if (existing.length > 0) {
+    console.log("[forever-papere] Media DB has entries, skipping migration");
+    return;
   }
 
-  console.log(`[forever-papere] Videos dir: ${videosDir}, found: ${videoFile || "none (using particle fallback)"}`);
-  event.returnValue = { videosDir, videoFile };
+  console.log("[forever-papere] First launch — migrating bundled media...");
+
+  // Migrate videos
+  const videoExts = [".mp4", ".webm", ".mkv", ".mov", ".avi"];
+  try {
+    for (const f of fs.readdirSync(bundledVideos)) {
+      if (videoExts.includes(path.extname(f).toLowerCase()) && !f.startsWith("generated_") && !f.startsWith("test_")) {
+        const src = path.join(bundledVideos, f);
+        importMedia(src, "video", ["uploaded", "bundled"]);
+        console.log("[forever-papere] Migrated video:", f);
+      }
+    }
+  } catch (_) { /* no bundled videos */ }
+
+  // Migrate images
+  const imgExts = [".png", ".jpg", ".jpeg", ".webp"];
+  try {
+    for (const f of fs.readdirSync(bundledImages)) {
+      if (imgExts.includes(path.extname(f).toLowerCase())) {
+        const src = path.join(bundledImages, f);
+        importMedia(src, "image", ["uploaded", "bundled", "character"]);
+        console.log("[forever-papere] Migrated image:", f);
+      }
+    }
+  } catch (_) { /* no bundled images */ }
+}
+
+ipcMain.on("wallpaper-get-config", (event) => {
+  // Check DB for latest video/image, then fall back to bundled
+  const record = getDefaultWallpaper();
+  let videoFile = "";
+
+  if (record) {
+    videoFile = record.filepath;
+  } else {
+    // Fallback: check bundled videos
+    const bundledDir = path.join(__dirname, "..", "..", "bundled", "videos");
+    try {
+      const videoExts = [".mp4", ".webm", ".mkv", ".mov", ".avi"];
+      const found = fs.readdirSync(bundledDir)
+        .find((f) => videoExts.includes(path.extname(f).toLowerCase()));
+      if (found) videoFile = path.join(bundledDir, found);
+    } catch (_) {}
+  }
+
+  console.log(`[forever-papere] Wallpaper: ${videoFile || "none (particles)"}`);
+  event.returnValue = { videosDir: VIDEOS_DIR, videoFile };
 });
 
 ipcMain.on("chatbox-get-config", (event) => {
-  const imagesDir = path.join(__dirname, "..", "..", "src", "images");
+  // Use app data images dir for character sprites
   event.returnValue = {
     position: chatboxPosition,
-    imagesDir,
+    imagesDir: IMAGES_DIR,
   };
 });
 
@@ -231,32 +275,27 @@ ipcMain.on("prompt-cancel", () => {
 });
 
 ipcMain.on("prompt-get-config", (event) => {
-  const imagesDir = path.join(__dirname, "..", "..", "src", "images");
   let characterImages: string[] = [];
   try {
     const imgExts = [".png", ".jpg", ".jpeg", ".webp"];
-    characterImages = fs.readdirSync(imagesDir)
+    characterImages = fs.readdirSync(IMAGES_DIR)
       .filter((f) => imgExts.includes(path.extname(f).toLowerCase()));
   } catch (_) { /* no images dir */ }
-  event.returnValue = { imagesDir, characterImages };
+  event.returnValue = { imagesDir: IMAGES_DIR, characterImages };
 });
 
 ipcMain.on("prompt-submit", async (_e, opts: {
   prompt: string; type: string; source: string; aspectRatio: string;
   duration: number; resolution: string;
 }) => {
-  const outputDir = path.join(__dirname, "..", "..", "src",
-    opts.type === "video" ? "videos" : "images");
-
   // Resolve source image path if using character PNG
   let sourceImagePath: string | undefined;
   if (opts.source === "character") {
-    const imagesDir = path.join(__dirname, "..", "..", "src", "images");
     try {
       const imgExts = [".png", ".jpg", ".jpeg", ".webp"];
-      const found = fs.readdirSync(imagesDir)
+      const found = fs.readdirSync(IMAGES_DIR)
         .find((f) => imgExts.includes(path.extname(f).toLowerCase()));
-      if (found) sourceImagePath = path.join(imagesDir, found);
+      if (found) sourceImagePath = path.join(IMAGES_DIR, found);
     } catch (_) { /* no images */ }
   }
 
@@ -270,7 +309,7 @@ ipcMain.on("prompt-submit", async (_e, opts: {
         aspectRatio: opts.aspectRatio,
         resolution: opts.resolution,
         sourceImagePath,
-      }, outputDir, (msg) => {
+      }, (msg) => {
         if (promptWindow && !promptWindow.isDestroyed()) {
           promptWindow.webContents.send("generation-status", msg);
         }
@@ -282,7 +321,7 @@ ipcMain.on("prompt-submit", async (_e, opts: {
         duration: opts.duration,
         aspectRatio: opts.aspectRatio,
         resolution: opts.resolution,
-      }, outputDir);
+      });
     } else {
       const msg = sourceImagePath
         ? "Generating image from character PNG..."
@@ -292,7 +331,7 @@ ipcMain.on("prompt-submit", async (_e, opts: {
         prompt: opts.prompt,
         aspectRatio: opts.aspectRatio,
         sourceImagePath,
-      }, outputDir);
+      });
     }
 
     if (result.success && result.filePath) {
@@ -414,12 +453,14 @@ function cleanup() {
   console.log("[forever-papere] Cleaning up...");
   try { getNative().detach(); } catch (_) {}
   try { getNative().reset(); } catch (_) {}
+  try { closeDb(); } catch (_) {}
   if (chatboxWindow && !chatboxWindow.isDestroyed()) chatboxWindow.close();
   if (tray) { tray.destroy(); tray = null; }
 }
 
 // ── App lifecycle ────────────────────────────────────────────
 app.on("ready", () => {
+  migrateBundledMedia();
   createTray();
   createWallpaperWindow();
 
