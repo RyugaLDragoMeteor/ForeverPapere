@@ -4,7 +4,7 @@
 import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, nativeImage } from "electron";
 import * as path from "path";
 import * as fs from "fs";
-import { generateImage, generateVideo, saveApiKey, hasApiKey } from "./xai-api";
+import { generateImage, generateVideo, generateCharacterVideo, saveApiKey, hasApiKey } from "./xai-api";
 
 function getNative(): typeof import("./wallpaper-native") {
   return require("./wallpaper-native");
@@ -17,29 +17,31 @@ let apikeyWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 
 // Settings
-type ChatboxPosition = "left" | "center" | "right";
-let chatboxPosition: ChatboxPosition = "center";
+type ChatboxPosition = "bottom-left" | "bottom-center" | "bottom-right" | "top-left" | "top-right";
+let chatboxPosition: ChatboxPosition = "bottom-center";
 const CHATBOX_WIDTH = 900;
-const CHATBOX_HEIGHT = 520; // taller to fit character sprite above text box
+const CHATBOX_HEIGHT = 520;
 const CHATBOX_MARGIN = 20;
 
 // ── Chatbox positioning ──────────────────────────────────────
 function getChatboxBounds() {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().size;
-  const y = screenH - CHATBOX_HEIGHT - CHATBOX_MARGIN;
-  let x: number;
+  let x: number, y: number;
 
-  switch (chatboxPosition) {
-    case "left":
-      x = CHATBOX_MARGIN;
-      break;
-    case "right":
-      x = screenW - CHATBOX_WIDTH - CHATBOX_MARGIN;
-      break;
-    case "center":
-    default:
-      x = Math.round((screenW - CHATBOX_WIDTH) / 2);
-      break;
+  // Horizontal
+  if (chatboxPosition.includes("left")) {
+    x = CHATBOX_MARGIN;
+  } else if (chatboxPosition.includes("right")) {
+    x = screenW - CHATBOX_WIDTH - CHATBOX_MARGIN;
+  } else {
+    x = Math.round((screenW - CHATBOX_WIDTH) / 2);
+  }
+
+  // Vertical
+  if (chatboxPosition.startsWith("top")) {
+    y = CHATBOX_MARGIN;
+  } else {
+    y = screenH - CHATBOX_HEIGHT - CHATBOX_MARGIN;
   }
 
   return { x, y, width: CHATBOX_WIDTH, height: CHATBOX_HEIGHT };
@@ -134,9 +136,9 @@ function createChatboxWindow() {
 
 function repositionChatbox(pos: ChatboxPosition) {
   chatboxPosition = pos;
+  // Recreate chatbox so renderer picks up the new position for sprite alignment
   if (chatboxWindow && !chatboxWindow.isDestroyed()) {
-    const bounds = getChatboxBounds();
-    chatboxWindow.setBounds(bounds);
+    createChatboxWindow();
   }
   rebuildTrayMenu();
 }
@@ -195,7 +197,7 @@ function openPromptDialog() {
   if (!hasApiKey()) { openApiKeyDialog(); return; }
   if (promptWindow && !promptWindow.isDestroyed()) { promptWindow.focus(); return; }
   promptWindow = new BrowserWindow({
-    width: 440, height: 380, frame: false, resizable: false,
+    width: 480, height: 520, frame: false, resizable: false,
     alwaysOnTop: true, skipTaskbar: false,
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
@@ -228,16 +230,52 @@ ipcMain.on("prompt-cancel", () => {
   if (promptWindow && !promptWindow.isDestroyed()) promptWindow.close();
 });
 
+ipcMain.on("prompt-get-config", (event) => {
+  const imagesDir = path.join(__dirname, "..", "..", "src", "images");
+  let characterImages: string[] = [];
+  try {
+    const imgExts = [".png", ".jpg", ".jpeg", ".webp"];
+    characterImages = fs.readdirSync(imagesDir)
+      .filter((f) => imgExts.includes(path.extname(f).toLowerCase()));
+  } catch (_) { /* no images dir */ }
+  event.returnValue = { imagesDir, characterImages };
+});
+
 ipcMain.on("prompt-submit", async (_e, opts: {
-  prompt: string; type: string; aspectRatio: string;
+  prompt: string; type: string; source: string; aspectRatio: string;
   duration: number; resolution: string;
 }) => {
   const outputDir = path.join(__dirname, "..", "..", "src",
     opts.type === "video" ? "videos" : "images");
 
+  // Resolve source image path if using character PNG
+  let sourceImagePath: string | undefined;
+  if (opts.source === "character") {
+    const imagesDir = path.join(__dirname, "..", "..", "src", "images");
+    try {
+      const imgExts = [".png", ".jpg", ".jpeg", ".webp"];
+      const found = fs.readdirSync(imagesDir)
+        .find((f) => imgExts.includes(path.extname(f).toLowerCase()));
+      if (found) sourceImagePath = path.join(imagesDir, found);
+    } catch (_) { /* no images */ }
+  }
+
   try {
     let result;
-    if (opts.type === "video") {
+    if (opts.type === "video" && sourceImagePath) {
+      // Two-step: image-edit → animate
+      result = await generateCharacterVideo({
+        prompt: opts.prompt,
+        duration: opts.duration,
+        aspectRatio: opts.aspectRatio,
+        resolution: opts.resolution,
+        sourceImagePath,
+      }, outputDir, (msg) => {
+        if (promptWindow && !promptWindow.isDestroyed()) {
+          promptWindow.webContents.send("generation-status", msg);
+        }
+      });
+    } else if (opts.type === "video") {
       if (promptWindow) promptWindow.webContents.send("generation-status", "Generating video... this may take several minutes.");
       result = await generateVideo({
         prompt: opts.prompt,
@@ -246,10 +284,14 @@ ipcMain.on("prompt-submit", async (_e, opts: {
         resolution: opts.resolution,
       }, outputDir);
     } else {
-      if (promptWindow) promptWindow.webContents.send("generation-status", "Generating image...");
+      const msg = sourceImagePath
+        ? "Generating image from character PNG..."
+        : "Generating image...";
+      if (promptWindow) promptWindow.webContents.send("generation-status", msg);
       result = await generateImage({
         prompt: opts.prompt,
         aspectRatio: opts.aspectRatio,
+        sourceImagePath,
       }, outputDir);
     }
 
@@ -276,22 +318,34 @@ function rebuildTrayMenu() {
       label: "Chatbox Position",
       submenu: [
         {
-          label: "Left",
+          label: "Bottom Left",
           type: "radio",
-          checked: chatboxPosition === "left",
-          click: () => repositionChatbox("left"),
+          checked: chatboxPosition === "bottom-left",
+          click: () => repositionChatbox("bottom-left"),
         },
         {
-          label: "Center",
+          label: "Bottom Center",
           type: "radio",
-          checked: chatboxPosition === "center",
-          click: () => repositionChatbox("center"),
+          checked: chatboxPosition === "bottom-center",
+          click: () => repositionChatbox("bottom-center"),
         },
         {
-          label: "Right",
+          label: "Bottom Right",
           type: "radio",
-          checked: chatboxPosition === "right",
-          click: () => repositionChatbox("right"),
+          checked: chatboxPosition === "bottom-right",
+          click: () => repositionChatbox("bottom-right"),
+        },
+        {
+          label: "Top Left",
+          type: "radio",
+          checked: chatboxPosition === "top-left",
+          click: () => repositionChatbox("top-left"),
+        },
+        {
+          label: "Top Right",
+          type: "radio",
+          checked: chatboxPosition === "top-right",
+          click: () => repositionChatbox("top-right"),
         },
       ],
     },

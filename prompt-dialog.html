@@ -75,6 +75,28 @@
       color: #b8b8ff;
     }
     .btn-cancel:hover { background: #444488; }
+    .btn-preset {
+      background: #4a3580;
+      color: #d0c0ff;
+      margin-bottom: 10px;
+      flex: none;
+      width: auto;
+      padding: 6px 12px;
+      font-size: 12px;
+    }
+    .btn-preset:hover { background: #5a45a0; }
+    .presets {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+      -webkit-app-region: no-drag;
+    }
+    .source-info {
+      font-size: 11px;
+      color: #6b6b9e;
+      margin-top: 4px;
+    }
     .status {
       margin-top: 12px;
       font-size: 12px;
@@ -87,6 +109,23 @@
 </head>
 <body>
   <h2 id="title">Generate Wallpaper</h2>
+
+  <label>Presets</label>
+  <div class="presets">
+    <button class="btn-preset" data-preset="lofi">Lofi Study</button>
+    <button class="btn-preset" data-preset="lofi-night">Lofi Night</button>
+    <button class="btn-preset" data-preset="lofi-rain">Lofi Rainy Day</button>
+    <button class="btn-preset" data-preset="custom">Custom</button>
+  </div>
+
+  <div class="field">
+    <label>Source</label>
+    <select id="source">
+      <option value="none">None (generate from scratch)</option>
+      <option value="character">Use character PNG from images/</option>
+    </select>
+    <div class="source-info" id="sourceInfo"></div>
+  </div>
 
   <div class="field">
     <label>Prompt</label>
@@ -143,10 +182,44 @@
     const { ipcRenderer } = require("electron");
 
     const typeEl = document.getElementById("type");
+    const sourceEl = document.getElementById("source");
+    const sourceInfo = document.getElementById("sourceInfo");
     const videoOpts = document.getElementById("videoOptions");
     const statusEl = document.getElementById("status");
     const generateBtn = document.getElementById("generateBtn");
     const cancelBtn = document.getElementById("cancelBtn");
+    const promptEl = document.getElementById("prompt");
+
+    // Get available character images from main process
+    const dialogConfig = ipcRenderer.sendSync("prompt-get-config");
+    const characterImages = dialogConfig.characterImages || [];
+
+    if (characterImages.length > 0) {
+      sourceInfo.textContent = "Found: " + characterImages[0];
+    } else {
+      sourceInfo.textContent = "No PNGs found in src/images/";
+      sourceEl.querySelector('[value="character"]').disabled = true;
+    }
+
+    // Presets
+    const presets = {
+      "lofi": "The character sitting at a cozy desk in a warm, softly-lit study room, lo-fi anime aesthetic. Books, plants, a desk lamp glowing warmly, headphones on, studying peacefully. Warm color palette, gentle ambient lighting, studio ghibli inspired cozy atmosphere",
+      "lofi-night": "The character sitting at a desk by a large window at night, city lights twinkling outside. Soft desk lamp, coffee mug steaming, books and papers scattered. Lo-fi anime aesthetic, deep blues and purples with warm lamp highlights, peaceful nighttime study vibes",
+      "lofi-rain": "The character sitting at a desk next to a rain-streaked window, rainy day outside. Cozy room with warm lighting, plants on the windowsill, tea cup, open book. Lo-fi anime aesthetic, soft muted colors, calming rainy atmosphere, studio ghibli vibes",
+      "custom": "",
+    };
+
+    document.querySelectorAll(".btn-preset").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const preset = btn.dataset.preset;
+        promptEl.value = presets[preset] || "";
+        if (preset !== "custom") {
+          sourceEl.value = characterImages.length > 0 ? "character" : "none";
+          typeEl.value = "video";
+          videoOpts.style.display = "flex";
+        }
+      });
+    });
 
     typeEl.addEventListener("change", () => {
       videoOpts.style.display = typeEl.value === "video" ? "flex" : "none";
@@ -157,7 +230,7 @@
     });
 
     generateBtn.addEventListener("click", () => {
-      const prompt = document.getElementById("prompt").value.trim();
+      const prompt = promptEl.value.trim();
       if (!prompt) {
         statusEl.textContent = "Please enter a prompt.";
         statusEl.className = "status error";
@@ -174,6 +247,7 @@
       ipcRenderer.send("prompt-submit", {
         prompt,
         type: typeEl.value,
+        source: sourceEl.value,
         aspectRatio: document.getElementById("aspect").value,
         duration: parseInt(document.getElementById("duration").value),
         resolution: document.getElementById("resolution").value,

@@ -14,10 +14,16 @@ window.addEventListener("resize", resize);
 
 // ── Load media ──────────────────────────────────────────────
 let currentAnimFrame: number | null = null;
+let currentVideo: HTMLVideoElement | null = null;
 
 function loadMedia(url: string) {
-  // Cancel any existing animation loop
+  // Stop previous video and animation
   if (currentAnimFrame !== null) cancelAnimationFrame(currentAnimFrame);
+  if (currentVideo) {
+    currentVideo.pause();
+    currentVideo.removeAttribute("src");
+    currentVideo = null;
+  }
 
   const isVideo = /\.(mp4|webm|mkv|mov|avi)(\?|$)/i.test(url);
   const isImage = /\.(png|jpg|jpeg|webp|gif|bmp)(\?|$)/i.test(url);
@@ -37,6 +43,7 @@ function loadMedia(url: string) {
 
     video.play().then(() => {
       console.log("[wallpaper] Video playing, rendering to canvas");
+      currentVideo = video;
       startVideoLoop(video);
     }).catch((err) => {
       console.log("[wallpaper] Video play failed:", err);

@@ -43,10 +43,17 @@ let skipTyping = false;
 let fullText = "";
 let charIndex = 0;
 
-// Apply position class to sprite
+// Derive sprite horizontal alignment from chatbox position
+function getSpriteAlign(): string {
+  const pos = config.position;
+  if (pos.includes("left")) return "left";
+  if (pos.includes("right")) return "right";
+  return "center";
+}
+
 function applySpritePosition() {
   spriteContainer.classList.remove("pos-left", "pos-center", "pos-right");
-  spriteContainer.classList.add(`pos-${config.position}`);
+  spriteContainer.classList.add(`pos-${getSpriteAlign()}`);
 }
 
 function showSprite(filename?: string) {
@@ -97,7 +104,8 @@ function advance() {
   currentLine++;
 
   if (currentLine >= script.length) {
-    window.chatboxAPI?.dismiss();
+    // Auto-dismiss after a brief pause
+    setTimeout(() => window.chatboxAPI?.dismiss(), 500);
     return;
   }
 
@@ -115,6 +123,11 @@ window.addEventListener("keydown", (e) => {
     advance();
   }
 });
+
+// Apply top/bottom layout
+if (config.position.startsWith("top")) {
+  document.querySelector(".vn-container")?.classList.add("top-position");
+}
 
 // Start
 showLine(script[0]);

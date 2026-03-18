@@ -10,6 +10,7 @@ export interface ImageGenOptions {
   aspectRatio?: string;
   resolution?: string;
   model?: string;
+  sourceImagePath?: string; // local PNG path for image-to-image editing
 }
 
 export interface VideoGenOptions {
@@ -17,6 +18,23 @@ export interface VideoGenOptions {
   duration?: number;
   aspectRatio?: string;
   resolution?: string;
+  sourceImagePath?: string; // local PNG path for image-to-video
+}
+
+// Convert a local image file to a base64 data URI
+function imageToDataUri(filePath: string): string {
+  const data = fs.readFileSync(filePath);
+  // Detect actual format from magic bytes, not file extension
+  let mime = "image/png";
+  if (data[0] === 0xFF && data[1] === 0xD8) {
+    mime = "image/jpeg";
+  } else if (data[0] === 0x89 && data[1] === 0x50) {
+    mime = "image/png";
+  } else if (data[0] === 0x52 && data[1] === 0x49) {
+    mime = "image/webp";
+  }
+  console.log(`[xai] Image data URI: ${mime}, ${data.length} bytes`);
+  return `data:${mime};base64,${data.toString("base64")}`;
 }
 
 export interface GenerationResult {
@@ -110,18 +128,35 @@ export async function generateImage(opts: ImageGenOptions, outputDir: string): P
   const apiKey = getApiKey();
   if (!apiKey) return { success: false, error: "No xAI API key configured" };
 
-  const body = {
-    model: opts.model || "grok-imagine-image",
-    prompt: opts.prompt,
-    n: 1,
-    aspect_ratio: opts.aspectRatio || "16:9",
-    resolution: opts.resolution || "1k",
-    response_format: "url",
-  };
+  let endpoint = `${API_BASE}/images/generations`;
+  let body: Record<string, unknown>;
 
-  console.log("[xai] Generating image:", opts.prompt);
+  if (opts.sourceImagePath) {
+    // Image editing: use the edits endpoint with source image
+    endpoint = `${API_BASE}/images/edits`;
+    const dataUri = imageToDataUri(opts.sourceImagePath);
+    body = {
+      model: opts.model || "grok-imagine-image",
+      prompt: opts.prompt,
+      image: {
+        url: dataUri,
+        type: "image_url",
+      },
+    };
+    console.log("[xai] Editing image with source:", opts.sourceImagePath);
+  } else {
+    body = {
+      model: opts.model || "grok-imagine-image",
+      prompt: opts.prompt,
+      n: 1,
+      aspect_ratio: opts.aspectRatio || "16:9",
+      resolution: opts.resolution || "1k",
+      response_format: "url",
+    };
+    console.log("[xai] Generating image:", opts.prompt);
+  }
 
-  const res = await apiFetch(`${API_BASE}/images/generations`, {
+  const res = await apiFetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -152,15 +187,34 @@ export async function generateVideo(opts: VideoGenOptions, outputDir: string): P
   const apiKey = getApiKey();
   if (!apiKey) return { success: false, error: "No xAI API key configured" };
 
-  const body = {
-    model: "grok-imagine-video",
-    prompt: opts.prompt,
-    duration: opts.duration || 5,
-    aspect_ratio: opts.aspectRatio || "16:9",
-    resolution: opts.resolution || "720p",
-  };
+  let body: Record<string, unknown>;
+
+  if (opts.sourceImagePath) {
+    // Image-to-video: use nested image object (matching xAI SDK gRPC format)
+    body = {
+      model: "grok-imagine-video",
+      prompt: opts.prompt,
+      image: {
+        url: imageToDataUri(opts.sourceImagePath),
+        type: "image_url",
+      },
+      duration: opts.duration || 5,
+    };
+    console.log("[xai] Image-to-video with source:", opts.sourceImagePath);
+  } else {
+    body = {
+      model: "grok-imagine-video",
+      prompt: opts.prompt,
+      duration: opts.duration || 5,
+      aspect_ratio: opts.aspectRatio || "16:9",
+      resolution: opts.resolution || "720p",
+    };
+  }
 
   console.log("[xai] Generating video:", opts.prompt);
+
+  // Log the body keys (not values - they may be huge base64)
+  console.log("[xai] Video request body keys:", Object.keys(body), "has source:", !!opts.sourceImagePath);
 
   const submitRes = await apiFetch(`${API_BASE}/videos/generations`, {
     method: "POST",
@@ -173,10 +227,13 @@ export async function generateVideo(opts: VideoGenOptions, outputDir: string): P
 
   if (!submitRes.ok) {
     const err = await submitRes.json();
+    console.error("[xai] Video submit error:", JSON.stringify(err));
     return { success: false, error: `API error ${submitRes.status}: ${JSON.stringify(err)}` };
   }
 
-  const { request_id } = await submitRes.json();
+  const submitData = await submitRes.json();
+  console.log("[xai] Video submit response:", JSON.stringify(submitData));
+  const { request_id } = submitData;
   if (!request_id) return { success: false, error: "No request_id in response" };
 
   console.log("[xai] Video request submitted:", request_id);
@@ -213,4 +270,40 @@ export async function generateVideo(opts: VideoGenOptions, outputDir: string): P
   }
 
   return { success: false, error: "Video generation timed out (10 min)" };
+}
+
+// ── Two-step pipeline: image-edit → image-to-video ───────────
+// First creates a scene with the character via image editing,
+// then animates that scene into a looping video.
+export async function generateCharacterVideo(
+  opts: VideoGenOptions & { sourceImagePath: string },
+  outputDir: string,
+  onStatus?: (msg: string) => void,
+): Promise<GenerationResult> {
+  onStatus?.("Step 1/2: Creating scene with your character...");
+
+  // Step 1: Generate the scene image with the character
+  const imgResult = await generateImage({
+    prompt: opts.prompt,
+    sourceImagePath: opts.sourceImagePath,
+    aspectRatio: opts.aspectRatio || "16:9",
+  }, outputDir);
+
+  if (!imgResult.success || !imgResult.filePath) {
+    return { success: false, error: `Image step failed: ${imgResult.error}` };
+  }
+
+  console.log("[xai] Scene image created:", imgResult.filePath);
+  onStatus?.("Step 2/2: Animating scene into video... this may take a few minutes.");
+
+  // Step 2: Animate the scene image into a video
+  const videoResult = await generateVideo({
+    prompt: "Animate this image with subtle gentle motion. Hair sways slightly, light flickers softly, steam rises from cup, pages flutter gently. Lofi calm peaceful atmosphere.",
+    duration: opts.duration || 5,
+    aspectRatio: opts.aspectRatio || "16:9",
+    resolution: opts.resolution || "720p",
+    sourceImagePath: imgResult.filePath,
+  }, outputDir);
+
+  return videoResult;
 }
