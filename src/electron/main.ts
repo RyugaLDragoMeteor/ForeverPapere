@@ -56,10 +56,16 @@ function createWallpaperWindow() {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
+      webSecurity: false, // Allow loading local video files
     },
   });
 
   mainWindow.loadFile(path.join(__dirname, "..", "..", "index.html"));
+
+  // Pipe renderer console to main process for debugging
+  mainWindow.webContents.on("console-message", (_e, _level, message) => {
+    console.log("[renderer]", message);
+  });
 
   mainWindow.once("ready-to-show", () => {
     if (!mainWindow) return;

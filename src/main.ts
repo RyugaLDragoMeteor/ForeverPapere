@@ -12,21 +12,29 @@ const canvas = document.getElementById("bg") as HTMLCanvasElement;
 
 // ── Try loading video ────────────────────────────────────────
 function tryLoadVideo() {
-  const videosDir = window.wallpaperConfig?.videosDir || "src/videos";
+  const videoUrl = (window as any).wallpaperConfig?.videoFile;
 
-  // Try common video formats
-  const formats = [".mp4", ".webm", ".mkv", ".mov"];
+  if (videoUrl) {
+    console.log("[wallpaper] Loading video:", videoUrl);
+    video.src = videoUrl;
+    video.style.display = "block";
+    canvas.style.display = "none";
 
-  // We'll use a fetch probe to find the first available video file.
-  // Since we're in Electron loading local files, we try known filenames.
-  // The preload script provides the actual files list via IPC.
-  // Fallback: just try to load any video source set by the preload.
-  if (video.src && video.src !== window.location.href) {
-    video.play().catch(() => fallbackToCanvas());
+    video.addEventListener("error", () => {
+      console.log("[wallpaper] Video error, falling back to canvas");
+      fallbackToCanvas();
+    });
+
+    video.play().then(() => {
+      console.log("[wallpaper] Video playing!");
+    }).catch((err) => {
+      console.log("[wallpaper] Video play failed:", err);
+      fallbackToCanvas();
+    });
     return;
   }
 
-  // No video source set — fall back to canvas
+  console.log("[wallpaper] No video found, using particle canvas");
   fallbackToCanvas();
 }
 
