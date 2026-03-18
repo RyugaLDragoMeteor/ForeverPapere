@@ -5,7 +5,7 @@ import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, native
 import * as path from "path";
 import * as fs from "fs";
 import { generateImage, generateVideo, generateCharacterVideo, saveApiKey, hasApiKey } from "./xai-api";
-import { closeDb, importMedia, getAllMedia, getDefaultWallpaper, VIDEOS_DIR, IMAGES_DIR, MEDIA_DIR } from "./media-db";
+import { closeDb, importMedia, getAllMedia, getDefaultWallpaper, ensureCharacter, linkMediaToCharacter, VIDEOS_DIR, IMAGES_DIR, MEDIA_DIR } from "./media-db";
 
 function getNative(): typeof import("./wallpaper-native") {
   return require("./wallpaper-native");
@@ -182,14 +182,21 @@ function migrateBundledMedia() {
     }
   } catch (_) { /* no bundled videos */ }
 
-  // Migrate images
+  // Migrate images and auto-create characters from filenames
   const imgExts = [".png", ".jpg", ".jpeg", ".webp"];
   try {
     for (const f of fs.readdirSync(bundledImages)) {
       if (imgExts.includes(path.extname(f).toLowerCase())) {
         const src = path.join(bundledImages, f);
-        importMedia(src, "image", ["uploaded", "bundled", "character"]);
-        console.log("[forever-papere] Migrated image:", f);
+        const record = importMedia(src, "image", ["uploaded", "bundled", "character"]);
+
+        // Derive character name from filename (strip extension, replace separators)
+        const baseName = path.basename(f, path.extname(f));
+        const charName = baseName.split(/[-_]/)[0].trim() || baseName;
+        const character = ensureCharacter(charName, record.id);
+        linkMediaToCharacter(record.id, character.id);
+
+        console.log(`[forever-papere] Migrated image: ${f} → character "${character.name}" (id=${character.id})`);
       }
     }
   } catch (_) { /* no bundled images */ }
@@ -288,15 +295,19 @@ ipcMain.on("prompt-submit", async (_e, opts: {
   prompt: string; type: string; source: string; aspectRatio: string;
   duration: number; resolution: string;
 }) => {
-  // Resolve source image path if using character PNG
+  // Resolve source image path and character from DB
   let sourceImagePath: string | undefined;
+  let sourceImageId: number | undefined;
+  let characterId: number | undefined;
+
   if (opts.source === "character") {
-    try {
-      const imgExts = [".png", ".jpg", ".jpeg", ".webp"];
-      const found = fs.readdirSync(IMAGES_DIR)
-        .find((f) => imgExts.includes(path.extname(f).toLowerCase()));
-      if (found) sourceImagePath = path.join(IMAGES_DIR, found);
-    } catch (_) { /* no images */ }
+    // Find the first character sprite in the DB
+    const charImages = getAllMedia("image").filter((r) => r.tags.includes("character"));
+    if (charImages.length > 0) {
+      sourceImagePath = charImages[0].filepath;
+      sourceImageId = charImages[0].id;
+      characterId = charImages[0].character_id || undefined;
+    }
   }
 
   try {
@@ -309,6 +320,8 @@ ipcMain.on("prompt-submit", async (_e, opts: {
         aspectRatio: opts.aspectRatio,
         resolution: opts.resolution,
         sourceImagePath,
+        sourceImageId,
+        characterId,
       }, (msg) => {
         if (promptWindow && !promptWindow.isDestroyed()) {
           promptWindow.webContents.send("generation-status", msg);
@@ -331,6 +344,8 @@ ipcMain.on("prompt-submit", async (_e, opts: {
         prompt: opts.prompt,
         aspectRatio: opts.aspectRatio,
         sourceImagePath,
+        sourceImageId,
+        characterId,
       });
     }
 

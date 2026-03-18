@@ -23,6 +23,13 @@ export { APP_DIR, MEDIA_DIR, IMAGES_DIR, VIDEOS_DIR };
 export type MediaType = "image" | "video";
 export type MediaSource = "generated" | "uploaded";
 
+export interface Character {
+  id: number;
+  name: string;
+  image_id: number | null;  // media record ID of the character's sprite/reference image
+  created_at: string;
+}
+
 export interface MediaRecord {
   id: number;
   filename: string;
@@ -36,12 +43,15 @@ export interface MediaRecord {
   duration: number | null;
   aspect_ratio: string | null;
   resolution: string | null;
-  source_image_id: number | null;
+  source_image_id: number | null;  // media ID of the image used to generate this
+  character_id: number | null;     // character this media is associated with
 }
 
 interface MediaStore {
   nextId: number;
+  nextCharacterId: number;
   records: MediaRecord[];
+  characters: Character[];
 }
 
 // ── JSON Store ──────────────────────────────────────────────
@@ -50,11 +60,18 @@ let store: MediaStore | null = null;
 function load(): MediaStore {
   if (store) return store;
   try {
-    store = JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
+    const raw = JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
+    // Migrate old schema if needed
+    if (!raw.characters) raw.characters = [];
+    if (!raw.nextCharacterId) raw.nextCharacterId = 1;
+    for (const r of raw.records) {
+      if (r.character_id === undefined) r.character_id = null;
+    }
+    store = raw;
   } catch {
-    store = { nextId: 1, records: [] };
+    store = { nextId: 1, nextCharacterId: 1, records: [], characters: [] };
   }
-  console.log("[media-db] Loaded", store!.records.length, "records from", DB_PATH);
+  console.log("[media-db] Loaded", store!.records.length, "media,", store!.characters.length, "characters from", DB_PATH);
   return store!;
 }
 
@@ -77,6 +94,7 @@ export function addMedia(opts: {
   aspectRatio?: string;
   resolution?: string;
   sourceImageId?: number;
+  characterId?: number;
 }): MediaRecord {
   const s = load();
   const record: MediaRecord = {
@@ -93,6 +111,7 @@ export function addMedia(opts: {
     aspect_ratio: opts.aspectRatio || null,
     resolution: opts.resolution || null,
     source_image_id: opts.sourceImageId || null,
+    character_id: opts.characterId || null,
   };
   s.records.push(record);
   save();
@@ -149,6 +168,84 @@ export function deleteMedia(id: number): boolean {
   return true;
 }
 
+// ── Character operations ─────────────────────────────────────
+
+export function addCharacter(name: string, imageId?: number): Character {
+  const s = load();
+  const character: Character = {
+    id: s.nextCharacterId++,
+    name,
+    image_id: imageId || null,
+    created_at: new Date().toISOString(),
+  };
+  s.characters.push(character);
+  save();
+  console.log(`[media-db] Added character: ${name} (id=${character.id})`);
+  return character;
+}
+
+export function getCharacterById(id: number): Character | null {
+  return load().characters.find((c) => c.id === id) || null;
+}
+
+export function getCharacterByName(name: string): Character | null {
+  return load().characters.find((c) => c.name.toLowerCase() === name.toLowerCase()) || null;
+}
+
+export function getAllCharacters(): Character[] {
+  return load().characters.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function getMediaByCharacter(characterId: number): MediaRecord[] {
+  return load().records
+    .filter((r) => r.character_id === characterId)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+export function updateCharacter(id: number, updates: { name?: string; imageId?: number }): void {
+  const s = load();
+  const character = s.characters.find((c) => c.id === id);
+  if (character) {
+    if (updates.name !== undefined) character.name = updates.name;
+    if (updates.imageId !== undefined) character.image_id = updates.imageId;
+    save();
+  }
+}
+
+export function deleteCharacter(id: number): boolean {
+  const s = load();
+  const idx = s.characters.findIndex((c) => c.id === id);
+  if (idx === -1) return false;
+  // Unlink media from this character
+  for (const r of s.records) {
+    if (r.character_id === id) r.character_id = null;
+  }
+  s.characters.splice(idx, 1);
+  save();
+  return true;
+}
+
+export function linkMediaToCharacter(mediaId: number, characterId: number): void {
+  const s = load();
+  const record = s.records.find((r) => r.id === mediaId);
+  if (record) {
+    record.character_id = characterId;
+    save();
+  }
+}
+
+/** Get or create a character, auto-linking their sprite image. */
+export function ensureCharacter(name: string, spriteMediaId?: number): Character {
+  const existing = getCharacterByName(name);
+  if (existing) {
+    if (spriteMediaId && !existing.image_id) {
+      updateCharacter(existing.id, { imageId: spriteMediaId });
+    }
+    return existing;
+  }
+  return addCharacter(name, spriteMediaId);
+}
+
 // ── Helpers ─────────────────────────────────────────────────
 
 /** Copy an external file into the app's media directory and register it. */
@@ -184,6 +281,7 @@ export function registerGenerated(opts: {
   aspectRatio?: string;
   resolution?: string;
   sourceImageId?: number;
+  characterId?: number;
 }): MediaRecord {
   // Move file to app media directory if it's not already there
   const destDir = opts.type === "video" ? VIDEOS_DIR : IMAGES_DIR;
@@ -207,6 +305,7 @@ export function registerGenerated(opts: {
     aspectRatio: opts.aspectRatio,
     resolution: opts.resolution,
     sourceImageId: opts.sourceImageId,
+    characterId: opts.characterId,
   });
 }
 

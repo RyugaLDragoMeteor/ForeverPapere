@@ -11,7 +11,9 @@ export interface ImageGenOptions {
   aspectRatio?: string;
   resolution?: string;
   model?: string;
-  sourceImagePath?: string; // local PNG path for image-to-image editing
+  sourceImagePath?: string;
+  sourceImageId?: number;  // DB id of the source image
+  characterId?: number;    // DB id of the character
 }
 
 export interface VideoGenOptions {
@@ -19,7 +21,9 @@ export interface VideoGenOptions {
   duration?: number;
   aspectRatio?: string;
   resolution?: string;
-  sourceImagePath?: string; // local PNG path for image-to-video
+  sourceImagePath?: string;
+  sourceImageId?: number;
+  characterId?: number;
 }
 
 // Convert a local image file to a base64 data URI
@@ -186,6 +190,8 @@ export async function generateImage(opts: ImageGenOptions): Promise<GenerationRe
     model: opts.model || "grok-imagine-image",
     tags: ["generated", "ai", opts.sourceImagePath ? "edited" : "text-to-image"],
     aspectRatio: opts.aspectRatio,
+    sourceImageId: opts.sourceImageId,
+    characterId: opts.characterId,
   });
 
   console.log("[xai] Image saved:", filePath, "db id:", record.id);
@@ -279,6 +285,8 @@ export async function generateVideo(opts: VideoGenOptions): Promise<GenerationRe
         duration: opts.duration,
         aspectRatio: opts.aspectRatio,
         resolution: opts.resolution,
+        sourceImageId: opts.sourceImageId,
+        characterId: opts.characterId,
       });
 
       console.log("[xai] Video saved:", filePath, "db id:", record.id);
@@ -306,6 +314,8 @@ export async function generateCharacterVideo(
   const imgResult = await generateImage({
     prompt: opts.prompt,
     sourceImagePath: opts.sourceImagePath,
+    sourceImageId: opts.sourceImageId,
+    characterId: opts.characterId,
     aspectRatio: opts.aspectRatio || "16:9",
   });
 
@@ -323,6 +333,8 @@ export async function generateCharacterVideo(
     aspectRatio: opts.aspectRatio || "16:9",
     resolution: opts.resolution || "720p",
     sourceImagePath: imgResult.filePath,
+    sourceImageId: imgResult.dbId,
+    characterId: opts.characterId,
   });
 
   return videoResult;
