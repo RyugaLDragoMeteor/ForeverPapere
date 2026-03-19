@@ -43,7 +43,12 @@ const SystemParametersInfoA = user32.func("SystemParametersInfoA", BOOL, [
   UINT, UINT, HWND, UINT,
 ]);
 const IsWindow = user32.func("IsWindow", BOOL, [HWND]);
+const MoveWindow = user32.func("MoveWindow", BOOL, [HWND, "int", "int", "int", "int", BOOL]);
 const Sleep = kernel32.func("Sleep", "void", [DWORD]);
+
+// POINT struct for MapWindowPoints
+const POINT = koffi.struct("POINT", { x: "long", y: "long" });
+const MapWindowPoints = user32.func("MapWindowPoints", "int", [HWND, HWND, koffi.inout(koffi.pointer(POINT)), UINT]);
 
 // ── Win32 constants ──────────────────────────────────────────
 const GWL_STYLE = -16;
@@ -86,11 +91,16 @@ const SWP_NOMOVE = 0x0002;
 const SWP_NOSIZE = 0x0001;
 
 // ── State ────────────────────────────────────────────────────
-let savedStyle: number = 0;
-let savedExStyle: number = 0;
-let savedParent: number = 0;
-let attachedHwnd: number = 0;
-let targetParent: number = 0;
+interface AttachedWindow {
+  hwnd: number;
+  savedStyle: number;
+  savedExStyle: number;
+  savedParent: number;
+  targetParent: number;
+}
+let attachedWindows: AttachedWindow[] = [];
+let cachedWorkerW: number = 0;
+let cachedProgman: number = 0;
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -140,7 +150,7 @@ function findWorkerW(progman: number): number {
   return workerW;
 }
 
-/** Send the 0x052C message and try to find WorkerW, with retries. */
+/** Send the 0x052C message and try to find an unused WorkerW. */
 function spawnAndFindWorkerW(): { workerW: number; progman: number } {
   const progman = Number(FindWindowA("Progman", null));
   if (!progman) {
@@ -149,13 +159,9 @@ function spawnAndFindWorkerW(): { workerW: number; progman: number } {
   console.log(`[native] Found Progman: 0x${progman.toString(16)}`);
 
   // Send the undocumented 0x052C message to spawn WorkerW.
-  // We try multiple times with delays because Windows sometimes
-  // needs a moment to create the WorkerW.
   for (let attempt = 0; attempt < 3; attempt++) {
     SendMessageTimeoutA(progman, 0x052c, 0xd, 0, SMTO_NORMAL, 1000, 0);
     SendMessageTimeoutA(progman, 0x052c, 0xd, 1, SMTO_NORMAL, 1000, 0);
-
-    // Give Windows time to create the WorkerW
     Sleep(100);
 
     const workerW = findWorkerW(progman);
@@ -170,9 +176,11 @@ function spawnAndFindWorkerW(): { workerW: number; progman: number } {
   return { workerW: 0, progman };
 }
 
+
+
 // ── Public API ───────────────────────────────────────────────
 
-export function attach(hwndBuffer: Buffer, screenWidth?: number, screenHeight?: number): boolean {
+export function attach(hwndBuffer: Buffer, screenWidth?: number, screenHeight?: number, screenX?: number, screenY?: number): boolean {
   const hwnd = process.arch === "x64"
     ? Number(hwndBuffer.readBigUInt64LE(0))
     : hwndBuffer.readUInt32LE(0);
@@ -183,61 +191,79 @@ export function attach(hwndBuffer: Buffer, screenWidth?: number, screenHeight?: 
     throw new Error(`Invalid window handle: 0x${hwnd.toString(16)}`);
   }
 
-  const { workerW, progman } = spawnAndFindWorkerW();
+  // Cache WorkerW so all monitors share the same parent
+  if (!cachedProgman) {
+    const result = spawnAndFindWorkerW();
+    cachedWorkerW = result.workerW;
+    cachedProgman = result.progman;
+  }
+  const workerW = cachedWorkerW;
+  const progman = cachedProgman;
 
   // Save original state for detach
-  savedStyle = Number(GetWindowLongPtrA(hwnd, GWL_STYLE));
-  savedExStyle = Number(GetWindowLongPtrA(hwnd, GWL_EXSTYLE));
-  savedParent = Number(GetParent(hwnd));
-  attachedHwnd = hwnd;
+  const entry: AttachedWindow = {
+    hwnd,
+    savedStyle: Number(GetWindowLongPtrA(hwnd, GWL_STYLE)),
+    savedExStyle: Number(GetWindowLongPtrA(hwnd, GWL_EXSTYLE)),
+    savedParent: Number(GetParent(hwnd)),
+    targetParent: 0,
+  };
 
-  // Use dimensions passed from Electron (which correctly handles DPI scaling)
-  // Fall back to GetSystemMetrics if not provided
-  const screenX = 0;
-  const screenY = 0;
+  // Positions are relative to WorkerW origin (passed from Electron)
+  const posX = screenX || 0;
+  const posY = screenY || 0;
   const screenW = screenWidth || GetSystemMetrics(SM_CXSCREEN);
   const screenH = screenHeight || GetSystemMetrics(SM_CYSCREEN);
 
   if (workerW) {
-    // ── Best case: WorkerW exists ──
-    // Parent into WorkerW which is already positioned behind desktop icons.
     console.log(`[native] Using WorkerW: 0x${workerW.toString(16)}`);
-    targetParent = workerW;
+    entry.targetParent = workerW;
 
-    // Strip window chrome
-    let style = savedStyle;
+    // Step 1: Position window at screen coordinates BEFORE parenting (like Lively)
+    SetWindowPos(hwnd, HWND_BOTTOM, posX, posY, screenW, screenH, SWP_NOACTIVATE);
+    console.log(`[native] Pre-parent pos: (${posX},${posY}) size: ${screenW}x${screenH}`);
+
+    // Step 2: Strip window chrome
+    let style = entry.savedStyle;
     style &= ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
     style |= WS_CHILD;
     SetWindowLongPtrA(hwnd, GWL_STYLE, style);
 
-    let exStyle = savedExStyle;
+    let exStyle = entry.savedExStyle;
     exStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_COMPOSITED | WS_EX_WINDOWEDGE |
       WS_EX_CLIENTEDGE | WS_EX_LAYERED | WS_EX_STATICEDGE |
       WS_EX_TOOLWINDOW | WS_EX_APPWINDOW);
     SetWindowLongPtrA(hwnd, GWL_EXSTYLE, exStyle);
 
+    // Step 3: MapWindowPoints — map {0,0} from window's client area to WorkerW
+    // (like Lively: maps the window's top-left corner to WorkerW coords)
+    const pts = [{ x: 0, y: 0 }];
+    MapWindowPoints(hwnd, workerW, pts, 1);
+    const mappedX = pts[0].x;
+    const mappedY = pts[0].y;
+    console.log(`[native] Mapped pos: (${mappedX},${mappedY})`);
+
+    // Step 4: SetParent to WorkerW
     SetParent(hwnd, workerW);
-    SetWindowPos(hwnd, 0, screenX, screenY, screenW, screenH, SWP_NOACTIVATE);
+
+    // Step 5: Position using mapped coordinates
+    SetWindowPos(hwnd, HWND_BOTTOM, mappedX, mappedY, screenW, screenH,
+      SWP_NOACTIVATE);
     ShowWindow(hwnd, SW_SHOW);
 
   } else {
-    // ── Fallback: Don't parent to Progman (Z-order is broken on Win11 26100+).
-    // Instead, keep the window as a top-level window and place it directly
-    // behind Progman in the Z-order. This makes it visible above the desktop
-    // wallpaper but below desktop icons and all other windows.
     console.log("[native] No WorkerW, parenting to Progman (WS_CHILD)");
-    targetParent = progman;
+    entry.targetParent = progman;
 
     const defView = Number(FindWindowExA(progman, 0, "SHELLDLL_DefView", null));
     console.log(`[native] SHELLDLL_DefView: 0x${defView.toString(16)}`);
 
-    // Use WS_CHILD — same approach that worked for particles
-    let style = savedStyle;
+    let style = entry.savedStyle;
     style &= ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
     style |= WS_CHILD | WS_CLIPSIBLINGS;
     SetWindowLongPtrA(hwnd, GWL_STYLE, style);
 
-    let exStyle = savedExStyle;
+    let exStyle = entry.savedExStyle;
     exStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_COMPOSITED | WS_EX_WINDOWEDGE |
       WS_EX_CLIENTEDGE | WS_EX_LAYERED | WS_EX_STATICEDGE |
       WS_EX_TOOLWINDOW | WS_EX_APPWINDOW);
@@ -246,7 +272,7 @@ export function attach(hwndBuffer: Buffer, screenWidth?: number, screenHeight?: 
     SetParent(hwnd, progman);
 
     const HWND_TOP = 0;
-    SetWindowPos(hwnd, HWND_TOP, screenX, screenY, screenW, screenH, SWP_NOACTIVATE);
+    SetWindowPos(hwnd, HWND_TOP, posX, posY, screenW, screenH, SWP_NOACTIVATE);
     ShowWindow(hwnd, SW_SHOW);
 
     if (defView) {
@@ -256,24 +282,28 @@ export function attach(hwndBuffer: Buffer, screenWidth?: number, screenHeight?: 
     }
   }
 
-  console.log(`[native] Attached! Screen: ${screenW}x${screenH} at (${screenX},${screenY})`);
+  attachedWindows.push(entry);
+  console.log(`[native] Attached! Screen: ${screenW}x${screenH} at (${posX},${posY})`);
   return true;
 }
 
 export function detach(): boolean {
-  if (!attachedHwnd) return false;
+  if (attachedWindows.length === 0) return false;
 
-  try {
-    SetParent(attachedHwnd, savedParent);
-    SetWindowLongPtrA(attachedHwnd, GWL_STYLE, savedStyle);
-    SetWindowLongPtrA(attachedHwnd, GWL_EXSTYLE, savedExStyle);
-    ShowWindow(attachedHwnd, SW_SHOW);
-  } catch (e) {
-    console.error("[native] Detach error:", e);
+  for (const entry of attachedWindows) {
+    try {
+      SetParent(entry.hwnd, entry.savedParent);
+      SetWindowLongPtrA(entry.hwnd, GWL_STYLE, entry.savedStyle);
+      SetWindowLongPtrA(entry.hwnd, GWL_EXSTYLE, entry.savedExStyle);
+      ShowWindow(entry.hwnd, SW_SHOW);
+    } catch (e) {
+      console.error(`[native] Detach error for 0x${entry.hwnd.toString(16)}:`, e);
+    }
   }
 
-  attachedHwnd = 0;
-  targetParent = 0;
+  attachedWindows = [];
+  cachedWorkerW = 0;
+  cachedProgman = 0;
   return true;
 }
 
@@ -283,7 +313,8 @@ export function reset(): boolean {
   } catch (e) {
     console.error("[native] Reset error:", e);
   }
-  attachedHwnd = 0;
-  targetParent = 0;
+  attachedWindows = [];
+  cachedWorkerW = 0;
+  cachedProgman = 0;
   return true;
 }

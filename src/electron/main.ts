@@ -11,7 +11,7 @@ function getNative(): typeof import("./wallpaper-native") {
   return require("./wallpaper-native");
 }
 
-let mainWindow: BrowserWindow | null = null;
+let wallpaperWindows: BrowserWindow[] = [];
 let chatboxWindow: BrowserWindow | null = null;
 let promptWindow: BrowserWindow | null = null;
 let apikeyWindow: BrowserWindow | null = null;
@@ -20,6 +20,29 @@ let tray: Tray | null = null;
 // Settings
 type ChatboxPosition = "bottom-left" | "bottom-center" | "bottom-right" | "top-left" | "top-right";
 let chatboxPosition: ChatboxPosition = "bottom-center";
+
+// Supported xAI aspect ratios
+const SUPPORTED_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "16:10", "10:16"] as const;
+
+function detectAspectRatio(width: number, height: number): string {
+  const ratio = width / height;
+  const aspects: { label: string; value: number }[] = [
+    { label: "16:9", value: 16 / 9 },
+    { label: "9:16", value: 9 / 16 },
+    { label: "1:1", value: 1 },
+    { label: "4:3", value: 4 / 3 },
+    { label: "3:4", value: 3 / 4 },
+    { label: "16:10", value: 16 / 10 },
+    { label: "10:16", value: 10 / 16 },
+  ];
+  let best = aspects[0];
+  let bestDiff = Math.abs(ratio - best.value);
+  for (const a of aspects) {
+    const diff = Math.abs(ratio - a.value);
+    if (diff < bestDiff) { best = a; bestDiff = diff; }
+  }
+  return best.label;
+}
 const CHATBOX_WIDTH = 900;
 const CHATBOX_HEIGHT = 520;
 const CHATBOX_MARGIN = 20;
@@ -48,54 +71,76 @@ function getChatboxBounds() {
   return { x, y, width: CHATBOX_WIDTH, height: CHATBOX_HEIGHT };
 }
 
-// ── Wallpaper window ─────────────────────────────────────────
+// ── Wallpaper windows (one per monitor) ─────────────────────
 function createWallpaperWindow() {
-  const display = screen.getPrimaryDisplay();
-  const sf = display.scaleFactor || 1;
-  const width = Math.round(display.workAreaSize.width * sf);
-  const height = Math.round(display.workAreaSize.height * sf);
+  const displays = screen.getAllDisplays();
+  let readyCount = 0;
 
-  mainWindow = new BrowserWindow({
-    width, height, x: 0, y: 0,
-    frame: false,
-    skipTaskbar: true,
-    resizable: false,
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      nodeIntegration: false,
-      contextIsolation: true,
-      webSecurity: false, // Allow loading local video files
-    },
-  });
+  console.log(`[forever-papere] Found ${displays.length} display(s)`);
 
-  mainWindow.loadFile(path.join(__dirname, "..", "..", "index.html"));
+  // Compute virtual screen origin (min x, min y across all displays)
+  let vsMinX = Infinity, vsMinY = Infinity;
+  for (const d of displays) {
+    vsMinX = Math.min(vsMinX, d.bounds.x);
+    vsMinY = Math.min(vsMinY, d.bounds.y);
+  }
 
-  // Pipe renderer console to main process for debugging
-  mainWindow.webContents.on("console-message", (_e, _level, message) => {
-    console.log("[renderer]", message);
-  });
+  for (let i = 0; i < displays.length; i++) {
+    const display = displays[i];
+    const b = display.bounds;
+    // Relative position within WorkerW (which spans the virtual screen)
+    const relX = b.x - vsMinX;
+    const relY = b.y - vsMinY;
+    console.log(`[forever-papere] Display ${i}: ${b.width}x${b.height} at (${b.x},${b.y}) sf=${display.scaleFactor} relPos=(${relX},${relY})`);
 
-  mainWindow.once("ready-to-show", () => {
-    if (!mainWindow) return;
-    mainWindow.show();
+    const win = new BrowserWindow({
+      width: b.width, height: b.height,
+      x: b.x, y: b.y,
+      frame: false,
+      skipTaskbar: true,
+      resizable: false,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, "preload.js"),
+        nodeIntegration: false,
+        contextIsolation: true,
+        webSecurity: false,
+      },
+    });
 
-    const hwndBuffer = mainWindow.getNativeWindowHandle();
-    const d = screen.getPrimaryDisplay();
-    const sf2 = d.scaleFactor || 1;
-    const sw = Math.round(d.workAreaSize.width * sf2);
-    const sh = Math.round(d.workAreaSize.height * sf2);
-    try {
-      const success = getNative().attach(hwndBuffer, sw, sh);
-      if (success) console.log("[forever-papere] Wallpaper attached!");
-    } catch (err) {
-      console.error("[forever-papere] Failed to attach:", err);
-    }
+    win.loadFile(path.join(__dirname, "..", "..", "index.html"));
 
-    createChatboxWindow();
-  });
+    win.webContents.on("console-message", (_e, _level, message) => {
+      console.log(`[renderer:${i}]`, message);
+    });
 
-  mainWindow.on("closed", () => { mainWindow = null; });
+    win.once("ready-to-show", () => {
+      win.show();
+      const hwndBuffer = win.getNativeWindowHandle();
+      try {
+        // Pass PHYSICAL pixel coordinates (like .NET Bounds) — WorkerW uses physical pixels
+        const sf = display.scaleFactor || 1;
+        const physW = Math.round(b.width * sf);
+        const physH = Math.round(b.height * sf);
+        const physX = Math.round(b.x * sf);
+        const physY = Math.round(b.y * sf);
+        console.log(`[forever-papere] Display ${i} physical: ${physW}x${physH} at (${physX},${physY})`);
+        const success = getNative().attach(hwndBuffer, physW, physH, physX, physY);
+        if (success) console.log(`[forever-papere] Wallpaper attached on display ${i}!`);
+      } catch (err) {
+        console.error(`[forever-papere] Failed to attach on display ${i}:`, err);
+      }
+
+      readyCount++;
+      if (readyCount === displays.length) createChatboxWindow();
+    });
+
+    win.on("closed", () => {
+      wallpaperWindows = wallpaperWindows.filter(w => w !== win);
+    });
+
+    wallpaperWindows.push(win);
+  }
 }
 
 // ── VN Chatbox window ────────────────────────────────────────
@@ -255,11 +300,13 @@ function openPromptDialog() {
 
 // Tell the wallpaper renderer to reload with a new media file
 function reloadWallpaper(filePath: string) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    const fileUrl = `file:///${filePath.replace(/\\/g, "/")}`;
-    mainWindow.webContents.send("wallpaper-reload", fileUrl);
-    console.log("[forever-papere] Reloading wallpaper:", fileUrl);
+  const fileUrl = `file:///${filePath.replace(/\\/g, "/")}`;
+  for (const win of wallpaperWindows) {
+    if (!win.isDestroyed()) {
+      win.webContents.send("wallpaper-reload", fileUrl);
+    }
   }
+  console.log(`[forever-papere] Reloading wallpaper on ${wallpaperWindows.length} display(s):`, fileUrl);
 }
 
 // ── xAI IPC handlers ────────────────────────────────────────
@@ -285,13 +332,16 @@ ipcMain.on("prompt-get-config", (event) => {
     characterImages = fs.readdirSync(IMAGES_DIR)
       .filter((f) => imgExts.includes(path.extname(f).toLowerCase()));
   } catch (_) { /* no images dir */ }
-  event.returnValue = { imagesDir: IMAGES_DIR, characterImages };
+  const primary = screen.getPrimaryDisplay();
+  const detectedAspect = detectAspectRatio(primary.bounds.width, primary.bounds.height);
+  event.returnValue = { imagesDir: IMAGES_DIR, characterImages, detectedAspect };
 });
 
 ipcMain.on("prompt-submit", async (_e, opts: {
   prompt: string; type: string; source: string; aspectRatio: string;
   duration: number; resolution: string;
 }) => {
+  isGenerating = true;
   // Resolve source image path and character from DB
   let sourceImagePath: string | undefined;
   let sourceImageId: number | undefined;
@@ -354,6 +404,8 @@ ipcMain.on("prompt-submit", async (_e, opts: {
   } catch (err: any) {
     console.error("[xai] Generation error:", err);
     if (promptWindow) promptWindow.webContents.send("generation-error", err.message || "Generation failed");
+  } finally {
+    isGenerating = false;
   }
 });
 
@@ -459,12 +511,96 @@ function createTrayIconBuffer(): Buffer {
   return buf;
 }
 
+// ── Auto-generation ─────────────────────────────────────────
+const AUTO_GEN_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+let autoGenTimer: ReturnType<typeof setInterval> | null = null;
+let isGenerating = false;
+
+async function autoGenerate() {
+  if (!hasApiKey()) {
+    console.log("[auto-gen] No API key set, skipping.");
+    return;
+  }
+  if (isGenerating) {
+    console.log("[auto-gen] Already generating, skipping.");
+    return;
+  }
+
+  isGenerating = true;
+  console.log("[auto-gen] Starting auto-generation...");
+
+  try {
+    const firstImage = getAllMedia("image", "uploaded")[0];
+    const sourceImagePath = firstImage?.filepath;
+    const sourceImageId = firstImage?.id;
+    const characterId = firstImage?.character_id || undefined;
+
+    const lofiPrompts = [
+      "The character sitting at a cozy desk in a warm, softly-lit study room, lo-fi anime aesthetic. Books, plants, a desk lamp glowing warmly, headphones on, studying peacefully. Warm color palette, gentle ambient lighting, studio ghibli inspired cozy atmosphere",
+      "The character relaxing by a rain-streaked window at night, lo-fi anime style. Warm interior lighting, a cup of tea steaming, bookshelves in background, city lights visible through rain. Calm, peaceful mood",
+      "The character at a rooftop garden at golden hour, lo-fi anime aesthetic. Plants, fairy lights, a small table with art supplies, warm sunset colors, gentle breeze effect. Serene and dreamy atmosphere",
+      "The character in a cozy cafe corner, lo-fi anime style. Warm lighting, pastries and coffee on the table, rain outside the window, vintage decor. Peaceful and inviting atmosphere",
+      "The character in a moonlit library, lo-fi anime aesthetic. Towering bookshelves, floating dust motes in soft light, a reading lamp, starry sky visible through a window. Magical and tranquil",
+    ];
+    const prompt = lofiPrompts[Math.floor(Math.random() * lofiPrompts.length)];
+
+    // Detect primary display aspect ratio for generation
+    const primary = screen.getPrimaryDisplay();
+    const aspectRatio = detectAspectRatio(primary.bounds.width, primary.bounds.height);
+    console.log(`[auto-gen] Primary display: ${primary.bounds.width}x${primary.bounds.height} → aspect ${aspectRatio}`);
+
+    let result;
+    if (sourceImagePath) {
+      result = await generateCharacterVideo({
+        prompt,
+        duration: 5,
+        aspectRatio,
+        resolution: "1080p",
+        sourceImagePath,
+        sourceImageId,
+        characterId,
+      }, (msg) => console.log("[auto-gen]", msg));
+    } else {
+      result = await generateVideo({
+        prompt,
+        duration: 5,
+        aspectRatio,
+        resolution: "1080p",
+      });
+    }
+
+    if (result.success && result.filePath) {
+      console.log("[auto-gen] Done! Applying wallpaper:", result.filePath);
+      reloadWallpaper(result.filePath);
+    } else {
+      console.error("[auto-gen] Failed:", result.error);
+    }
+  } catch (err: any) {
+    console.error("[auto-gen] Error:", err.message);
+  } finally {
+    isGenerating = false;
+  }
+}
+
+function startAutoGeneration() {
+  // Generate on startup (small delay to let wallpaper window init)
+  setTimeout(() => autoGenerate(), 5000);
+  // Then every 30 minutes
+  autoGenTimer = setInterval(() => autoGenerate(), AUTO_GEN_INTERVAL_MS);
+  console.log("[auto-gen] Scheduled: on startup + every 30 minutes.");
+}
+
 // ── Cleanup ──────────────────────────────────────────────────
 function cleanup() {
   console.log("[forever-papere] Cleaning up...");
+  if (autoGenTimer) { clearInterval(autoGenTimer); autoGenTimer = null; }
   try { getNative().detach(); } catch (_) {}
   try { getNative().reset(); } catch (_) {}
   try { closeDb(); } catch (_) {}
+  for (const win of wallpaperWindows) {
+    if (!win.isDestroyed()) win.close();
+  }
+  wallpaperWindows = [];
   if (chatboxWindow && !chatboxWindow.isDestroyed()) chatboxWindow.close();
   if (tray) { tray.destroy(); tray = null; }
 }
@@ -490,6 +626,8 @@ app.on("ready", () => {
   });
 
   console.log("[forever-papere] Running! Ctrl+Alt+H = toggle chatbox, Ctrl+Alt+Q = quit.");
+
+  startAutoGeneration();
 });
 
 // Handle external kill (taskkill, SIGTERM, etc.)

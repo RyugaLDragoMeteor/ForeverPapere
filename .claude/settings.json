@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python -c \":*)",
+      "Bash(npm install:*)",
+      "Bash(node_modules/electron/dist/electron.exe --version)",
+      "Bash(node -e \"console.log\\(process.versions.node\\)\")",
+      "Bash(npm uninstall:*)",
+      "Bash(taskkill /f /im electron.exe)",
+      "Bash(rm -f $APPDATA/ForeverPapere/media.json)",
+      "Bash(rm -rf $APPDATA/ForeverPapere/media/)",
+      "Bash(powershell -Command \"Get-Process electron -ErrorAction SilentlyContinue | Stop-Process -Force\")",
+      "Bash(rm -rf \"$APPDATA/ForeverPapere/media\")",
+      "Read(//c/Users/joshu/wallpaper_mambo/$APPDATA/ForeverPapere/**)",
+      "Read(//tmp/lively/src/Lively/Lively/Core/**)"
+    ]
+  }
+}
