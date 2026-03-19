@@ -12,7 +12,10 @@
     "start": "npm run build && electron .",
     "stop": "node -e \"try{require('child_process').execSync('taskkill /f /im electron.exe')}catch(e){}\"",
     "dev": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit"
   },
   "dependencies": {
     "koffi": "^2.9.0"
@@ -21,7 +24,8 @@
     "electron": "^33.0.0",
     "electron-builder": "^25.1.0",
     "esbuild": "^0.20.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.0"
   },
   "build": {
     "appId": "com.foreverpapere.app",
