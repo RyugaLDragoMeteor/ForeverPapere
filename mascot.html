@@ -40,27 +40,35 @@
     }
     #chat.open { display: flex; }
 
-    /* Top box: latest received/typed message */
+    /* Top box: scrollable chat history */
     #messageBox {
       background: rgba(20, 20, 45, 0.92);
       border: 1px solid rgba(99, 102, 241, 0.4);
       border-radius: 12px;
-      padding: 12px 14px;
+      padding: 10px 12px;
       color: #e0e0ff;
       font-size: 13px;
       line-height: 1.5;
       min-height: 50px;
-      max-height: 120px;
+      max-height: 200px;
       overflow-y: auto;
       word-wrap: break-word;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
-    #messageBox .sender {
+    #messageBox::-webkit-scrollbar { width: 4px; }
+    #messageBox::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.4); border-radius: 2px; }
+    #messageBox::-webkit-scrollbar-track { background: transparent; }
+    .msg-entry .sender {
       font-size: 11px;
       font-weight: 600;
-      margin-bottom: 3px;
+      margin-bottom: 2px;
     }
-    #messageBox .sender.you { color: #6bff8b; }
-    #messageBox .sender.char { color: #b8b8ff; }
+    .msg-entry .sender.you { color: #6bff8b; }
+    .msg-entry .sender.char { color: #b8b8ff; }
+    .msg-entry .sender.system { color: #ff8b8b; }
+    .msg-entry .text { word-wrap: break-word; }
 
     /* Bottom box: input / waiting indicator */
     #inputBox {
@@ -113,8 +121,10 @@
     <img id="sprite" />
     <div id="chat">
       <div id="messageBox">
-        <div class="sender char" id="msgSender"></div>
-        <div id="msgText">Click me to chat!</div>
+        <div class="msg-entry">
+          <div class="sender char" id="msgSender"></div>
+          <div class="text" id="msgText">Click me to chat!</div>
+        </div>
       </div>
       <div id="inputBox">
         <input id="inputField" type="text" placeholder="Type a message..." />
@@ -129,8 +139,7 @@
     console.log("[mascot] Config:", JSON.stringify(config));
     const sprite = document.getElementById("sprite");
     const chat = document.getElementById("chat");
-    const msgSender = document.getElementById("msgSender");
-    const msgText = document.getElementById("msgText");
+    const messageBox = document.getElementById("messageBox");
     const inputField = document.getElementById("inputField");
     const waitingDots = document.getElementById("waitingDots");
     const sendBtn = document.getElementById("sendBtn");
@@ -154,31 +163,31 @@
       if (chatOpen) inputField.focus();
     });
 
-    function showLatestMessage(sender, text, isChar) {
+    const msgSender = document.getElementById("msgSender");
+    const msgText = document.getElementById("msgText");
+
+    function showMessage(sender, text, type) {
       msgSender.textContent = sender;
-      msgSender.className = "sender " + (isChar ? "char" : "you");
+      msgSender.className = "sender " + type;
       msgText.textContent = text;
+      // Scroll to top of message
+      messageBox.scrollTop = 0;
     }
 
     function setWaiting(on) {
       waiting = on;
       inputField.style.display = on ? "none" : "block";
       waitingDots.style.display = on ? "block" : "none";
-      sendBtn.disabled = on;
+      sendBtn.style.display = on ? "none" : "block";
     }
 
     function sendMessage() {
       const text = inputField.value.trim();
       if (!text || waiting) return;
 
-      // Your message goes to the top box
-      showLatestMessage("You", text, false);
+      showMessage("You", text, "you");
       inputField.value = "";
-
-      // Bottom box shows "..." while waiting
       setWaiting(true);
-
-      // Send to main process
       window.mascotAPI.sendChat(text);
     }
 
@@ -187,15 +196,15 @@
       if (e.key === "Enter") sendMessage();
     });
 
-    // AI response: push to top box, restore input
+    // AI response
     window.mascotAPI.onResponse((response) => {
-      showLatestMessage(config.characterName || "Character", response, true);
+      showMessage(config.characterName || "Character", response, "char");
       setWaiting(false);
       inputField.focus();
     });
 
     window.mascotAPI.onError((error) => {
-      showLatestMessage("System", error, true);
+      showMessage("Error", error, "system");
       setWaiting(false);
       inputField.focus();
     });

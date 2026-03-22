@@ -36,6 +36,7 @@ function markIntroSeen(): void {
 }
 
 let wallpaperWindows: BrowserWindow[] = [];
+let frontpaperWindow: BrowserWindow | null = null;
 let chatboxWindow: BrowserWindow | null = null;
 let promptWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -47,6 +48,45 @@ let chatboxPosition: ChatboxPosition = "bottom-center";
 function getChatboxBounds() {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
   return computeChatboxBounds(screenW, screenH, chatboxPosition);
+}
+
+// ── Frontpaper window (transparent overlay on top of everything) ──
+function createFrontpaperWindow() {
+  const primary = screen.getPrimaryDisplay();
+  const workArea = primary.workAreaSize;
+
+  frontpaperWindow = new BrowserWindow({
+    width: workArea.width,
+    height: workArea.height,
+    x: primary.workArea.x,
+    y: primary.workArea.y,
+    frame: false,
+    transparent: true,
+    skipTaskbar: true,
+    resizable: false,
+    alwaysOnTop: true,
+    focusable: false,
+    hasShadow: false,
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  frontpaperWindow.setIgnoreMouseEvents(true);
+  frontpaperWindow.loadFile(path.join(__dirname, "..", "..", "frontpaper.html"));
+
+  frontpaperWindow.webContents.on("console-message", (_e, _level, message) => {
+    console.log(`[frontpaper]`, message);
+  });
+
+  frontpaperWindow.once("ready-to-show", () => {
+    frontpaperWindow!.show();
+    console.log(`[forever-papere] Frontpaper overlay shown: ${workArea.width}x${workArea.height}`);
+  });
+
+  frontpaperWindow.on("closed", () => { frontpaperWindow = null; });
 }
 
 // ── Wallpaper windows (one per monitor) ─────────────────────
@@ -814,6 +854,7 @@ function cleanup() {
   }
   wallpaperWindows = [];
   if (chatboxWindow && !chatboxWindow.isDestroyed()) chatboxWindow.close();
+  if (frontpaperWindow && !frontpaperWindow.isDestroyed()) frontpaperWindow.close();
   if (tray) { tray.destroy(); tray = null; }
 }
 
@@ -841,6 +882,7 @@ app.on("ready", () => {
   migrateBundledMedia();
   createTray();
   createWallpaperWindow();
+  createFrontpaperWindow();
 
   globalShortcut.register("CommandOrControl+Alt+Q", () => {
     cleanup();
