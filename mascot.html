@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mascot</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      background: transparent;
+      overflow: hidden;
+      font-family: 'Segoe UI', sans-serif;
+    }
+
+    #container {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      height: 100%;
+      padding: 4px;
+    }
+
+    /* Character sprite */
+    #sprite {
+      width: 120px;
+      height: 120px;
+      cursor: pointer;
+      object-fit: contain;
+      transition: transform 0.15s;
+      flex-shrink: 0;
+    }
+    #sprite:hover { transform: scale(1.05); }
+
+    /* Chat area (hidden by default) */
+    #chat {
+      display: none;
+      flex-direction: column;
+      width: 320px;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    #chat.open { display: flex; }
+
+    /* Top box: latest message */
+    #messageBox {
+      background: rgba(20, 20, 45, 0.92);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      border-radius: 12px;
+      padding: 12px 14px;
+      color: #e0e0ff;
+      font-size: 13px;
+      line-height: 1.5;
+      min-height: 50px;
+      max-height: 120px;
+      overflow-y: auto;
+      word-wrap: break-word;
+    }
+    #messageBox .sender {
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 3px;
+    }
+    #messageBox .sender.you { color: #6bff8b; }
+    #messageBox .sender.char { color: #b8b8ff; }
+
+    /* Bottom box: input */
+    #inputBox {
+      display: flex;
+      gap: 6px;
+      background: rgba(20, 20, 45, 0.92);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      border-radius: 12px;
+      padding: 8px 10px;
+    }
+    #inputField {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: #e0e0ff;
+      font-size: 13px;
+      outline: none;
+    }
+    #inputField::placeholder { color: #6b6b9e; }
+    #sendBtn {
+      background: #6366f1;
+      border: none;
+      border-radius: 8px;
+      color: white;
+      padding: 4px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    #sendBtn:hover { background: #5558e6; }
+    #sendBtn:disabled { opacity: 0.5; cursor: default; }
+
+    .typing {
+      color: #8888bb;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <img id="sprite" />
+    <div id="chat">
+      <div id="messageBox">
+        <div class="sender char" id="msgSender"></div>
+        <div id="msgText">Click me to chat!</div>
+      </div>
+      <div id="inputBox">
+        <input id="inputField" type="text" placeholder="Type a message..." />
+        <button id="sendBtn">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const config = window.mascotAPI.getConfig();
+    console.log("[mascot] Config:", JSON.stringify(config));
+    const sprite = document.getElementById("sprite");
+    const chat = document.getElementById("chat");
+    const messageBox = document.getElementById("messageBox");
+    const msgSender = document.getElementById("msgSender");
+    const msgText = document.getElementById("msgText");
+    const inputField = document.getElementById("inputField");
+    const sendBtn = document.getElementById("sendBtn");
+
+    let chatOpen = false;
+    let waiting = false;
+
+    // Load sprite using file:// URL
+    if (config.spriteFile && config.imagesDir) {
+      const url = "file:///" + (config.imagesDir + "/" + config.spriteFile).replace(/\\/g, "/");
+      console.log("[mascot] Loading sprite:", url);
+      sprite.src = url;
+      sprite.onload = () => console.log("[mascot] Sprite loaded OK");
+      sprite.onerror = (e) => console.error("[mascot] Sprite load FAILED:", e);
+    } else {
+      console.log("[mascot] No sprite config");
+    }
+
+    // Click sprite to toggle chat
+    sprite.addEventListener("click", () => {
+      console.log("[mascot] Sprite clicked!");
+      chatOpen = !chatOpen;
+      chat.classList.toggle("open", chatOpen);
+      window.mascotAPI.toggleChat(chatOpen);
+      if (chatOpen) inputField.focus();
+    });
+
+    // Also listen for clicks anywhere on the document
+    document.addEventListener("click", (e) => {
+      console.log("[mascot] Document clicked at", e.clientX, e.clientY, "target:", e.target.id || e.target.tagName);
+    });
+
+    function showMessage(sender, text, isChar) {
+      msgSender.textContent = sender;
+      msgSender.className = "sender " + (isChar ? "char" : "you");
+      msgText.innerHTML = text;
+      msgText.className = "";
+    }
+
+    function showTyping() {
+      msgSender.textContent = config.characterName || "Character";
+      msgSender.className = "sender char";
+      msgText.textContent = "...";
+      msgText.className = "typing";
+    }
+
+    function sendMessage() {
+      const text = inputField.value.trim();
+      if (!text || waiting) return;
+
+      // Show user's message in top box
+      showMessage("You", text, false);
+      inputField.value = "";
+      inputField.placeholder = "...";
+      inputField.disabled = true;
+      sendBtn.disabled = true;
+      waiting = true;
+
+      // Send to main process
+      window.mascotAPI.sendChat(text);
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+    inputField.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendMessage();
+    });
+
+    // Receive response from OpenRouter
+    window.mascotAPI.onResponse((response) => {
+      waiting = false;
+      inputField.disabled = false;
+      inputField.placeholder = "Type a message...";
+      sendBtn.disabled = false;
+      showMessage(config.characterName || "Character", response, true);
+      inputField.focus();
+    });
+
+    window.mascotAPI.onError((error) => {
+      waiting = false;
+      inputField.disabled = false;
+      inputField.placeholder = "Type a message...";
+      sendBtn.disabled = false;
+      showMessage("System", error, true);
+    });
+  </script>
+</body>
+</html>

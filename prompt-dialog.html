@@ -134,12 +134,22 @@
 
   <div class="row">
     <div class="field">
+      <label>Provider</label>
+      <select id="provider">
+        <option value="openrouter">OpenRouter (Images)</option>
+        <option value="xai">xAI Grok (Images + Video)</option>
+      </select>
+    </div>
+    <div class="field">
       <label>Type</label>
       <select id="type">
         <option value="image">Image</option>
-        <option value="video">Video</option>
+        <option value="video" id="videoOption">Video (xAI only)</option>
       </select>
     </div>
+  </div>
+
+  <div class="row">
     <div class="field">
       <label>Aspect Ratio</label>
       <select id="aspect">
@@ -181,7 +191,9 @@
   <script>
     const { ipcRenderer } = require("electron");
 
+    const providerEl = document.getElementById("provider");
     const typeEl = document.getElementById("type");
+    const videoOption = document.getElementById("videoOption");
     const sourceEl = document.getElementById("source");
     const sourceInfo = document.getElementById("sourceInfo");
     const videoOpts = document.getElementById("videoOptions");
@@ -190,14 +202,35 @@
     const cancelBtn = document.getElementById("cancelBtn");
     const promptEl = document.getElementById("prompt");
 
-    // Get available character images from main process
+    // Get available character images and provider status
     const dialogConfig = ipcRenderer.sendSync("prompt-get-config");
     const characterImages = dialogConfig.characterImages || [];
+
+    // Set provider availability
+    if (!dialogConfig.hasOpenRouter) {
+      providerEl.querySelector('[value="openrouter"]').textContent = "OpenRouter (not signed in)";
+      providerEl.querySelector('[value="openrouter"]').disabled = true;
+    }
+    if (!dialogConfig.hasXai) {
+      providerEl.querySelector('[value="xai"]').textContent = "xAI Grok (no API key)";
+      providerEl.querySelector('[value="xai"]').disabled = true;
+    }
+    // Default to first available provider
+    if (dialogConfig.hasXai) providerEl.value = "xai";
+    else if (dialogConfig.hasOpenRouter) providerEl.value = "openrouter";
+
+    // Toggle video option based on provider
+    providerEl.addEventListener("change", () => {
+      const isXai = providerEl.value === "xai";
+      videoOption.disabled = !isXai;
+      if (!isXai && typeEl.value === "video") typeEl.value = "image";
+      videoOpts.style.display = (isXai && typeEl.value === "video") ? "flex" : "none";
+    });
 
     if (characterImages.length > 0) {
       sourceInfo.textContent = "Found: " + characterImages[0];
     } else {
-      sourceInfo.textContent = "No PNGs found in src/images/";
+      sourceInfo.textContent = "No PNGs found in images/";
       sourceEl.querySelector('[value="character"]').disabled = true;
     }
 
@@ -215,8 +248,14 @@
         promptEl.value = presets[preset] || "";
         if (preset !== "custom") {
           sourceEl.value = characterImages.length > 0 ? "character" : "none";
-          typeEl.value = "video";
-          videoOpts.style.display = "flex";
+          // Use video if xAI is available, otherwise image
+          if (providerEl.value === "xai") {
+            typeEl.value = "video";
+            videoOpts.style.display = "flex";
+          } else {
+            typeEl.value = "image";
+            videoOpts.style.display = "none";
+          }
         }
       });
     });
@@ -246,6 +285,7 @@
 
       ipcRenderer.send("prompt-submit", {
         prompt,
+        provider: providerEl.value,
         type: typeEl.value,
         source: sourceEl.value,
         aspectRatio: document.getElementById("aspect").value,

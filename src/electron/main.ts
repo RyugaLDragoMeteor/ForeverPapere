@@ -4,7 +4,9 @@
 import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, nativeImage } from "electron";
 import * as path from "path";
 import * as fs from "fs";
-import { generateImage, generateVideo, generateCharacterVideo, saveApiKey, hasApiKey } from "./xai-api";
+import { generateImage as orGenerateImage, generateCharacterWallpaper } from "./openrouter-api";
+import { startOAuthFlow, hasApiKey as hasOpenRouterKey, saveApiKey as saveOpenRouterKey } from "./openrouter-auth";
+import { generateImage as xaiGenerateImage, generateVideo, generateCharacterVideo, saveApiKey as saveXaiKey, hasApiKey as hasXaiKey } from "./xai-api";
 import { closeDb, importMedia, getAllMedia, getDefaultWallpaper, ensureCharacter, linkMediaToCharacter, VIDEOS_DIR, IMAGES_DIR, MEDIA_DIR } from "./media-db";
 import { ChatboxPosition, detectAspectRatio, computeChatboxBounds, createTrayIconBuffer, getSpriteAlign, CHATBOX_WIDTH, CHATBOX_HEIGHT } from "./utils";
 
@@ -15,7 +17,6 @@ function getNative(): typeof import("./wallpaper-native") {
 let wallpaperWindows: BrowserWindow[] = [];
 let chatboxWindow: BrowserWindow | null = null;
 let promptWindow: BrowserWindow | null = null;
-let apikeyWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 
 // Settings
@@ -23,7 +24,7 @@ let chatboxPosition: ChatboxPosition = "bottom-center";
 
 // ── Chatbox positioning ──────────────────────────────────────
 function getChatboxBounds() {
-  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().size;
+  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
   return computeChatboxBounds(screenW, screenH, chatboxPosition);
 }
 
@@ -145,11 +146,161 @@ function repositionChatbox(pos: ChatboxPosition) {
   rebuildTrayMenu();
 }
 
+// ── Mascot widget (persistent character + chat) ─────────
+let mascotWindow: BrowserWindow | null = null;
+let mascotChatHistory: { role: string; content: string }[] = [];
+
+const MASCOT_SPRITE_SIZE = 120;
+const MASCOT_CHAT_WIDTH = 320;
+const MASCOT_COLLAPSED_HEIGHT = MASCOT_SPRITE_SIZE + 12;
+const MASCOT_EXPANDED_HEIGHT = MASCOT_SPRITE_SIZE + 200;
+const MASCOT_MARGIN = 10;
+
+function getMascotBounds(expanded: boolean) {
+  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+  const w = expanded ? MASCOT_CHAT_WIDTH + 12 : MASCOT_SPRITE_SIZE + 12;
+  const h = expanded ? MASCOT_EXPANDED_HEIGHT : MASCOT_COLLAPSED_HEIGHT;
+  return {
+    x: screenW - w - MASCOT_MARGIN,
+    y: screenH - h - MASCOT_MARGIN,
+    width: w,
+    height: h,
+  };
+}
+
+function createMascotWindow() {
+  if (mascotWindow && !mascotWindow.isDestroyed()) return;
+
+  const bounds = getMascotBounds(false);
+  mascotWindow = new BrowserWindow({
+    ...bounds,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    focusable: true,
+    hasShadow: false,
+    webPreferences: {
+      preload: path.join(__dirname, "mascot-preload.js"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: false,
+    },
+  });
+
+  mascotWindow.loadFile(path.join(__dirname, "..", "..", "mascot.html"));
+  mascotWindow.webContents.on("console-message", (_e, _level, message) => {
+    console.log("[mascot-renderer]", message);
+  });
+  mascotWindow.once("ready-to-show", () => {
+    mascotWindow?.show();
+    console.log("[mascot] Window shown");
+  });
+  mascotWindow.on("closed", () => { mascotWindow = null; });
+}
+
+// Chat with OpenRouter
+async function handleMascotChat(userMessage: string) {
+  if (!mascotWindow || mascotWindow.isDestroyed()) return;
+  if (!hasOpenRouterKey()) {
+    mascotWindow.webContents.send("mascot-chat-error", "No OpenRouter key set. Add one in tray settings.");
+    return;
+  }
+
+  // Get character info
+  const firstImage = getAllMedia("image", "uploaded")[0];
+  const charName = firstImage?.character_id
+    ? (getAllMedia().find(m => m.character_id === firstImage.character_id) ? "Character" : "Character")
+    : "Character";
+
+  // Build system prompt
+  if (mascotChatHistory.length === 0) {
+    mascotChatHistory.push({
+      role: "system",
+      content: `You are ${charName}, a friendly anime character who lives on the user's desktop as a mascot. You are cheerful, helpful, and speak in short casual messages (1-3 sentences max). You can chat about anything. Be playful and expressive.`,
+    });
+  }
+
+  mascotChatHistory.push({ role: "user", content: userMessage });
+
+  // Keep history manageable (last 20 messages + system)
+  if (mascotChatHistory.length > 22) {
+    mascotChatHistory = [mascotChatHistory[0], ...mascotChatHistory.slice(-20)];
+  }
+
+  try {
+    const { getApiKey: getORKey } = require("./openrouter-auth");
+    const apiKey = getORKey();
+    const { net } = require("electron");
+
+    const body = JSON.stringify({
+      model: "google/gemini-2.5-flash-preview",
+      messages: mascotChatHistory,
+      max_tokens: 200,
+    });
+
+    const response: any = await new Promise((resolve, reject) => {
+      const request = net.request({
+        url: "https://openrouter.ai/api/v1/chat/completions",
+        method: "POST",
+      });
+      request.setHeader("Content-Type", "application/json");
+      request.setHeader("Authorization", `Bearer ${apiKey}`);
+      let data = Buffer.alloc(0);
+      request.on("response", (res: any) => {
+        res.on("data", (chunk: Buffer) => { data = Buffer.concat([data, chunk]); });
+        res.on("end", () => {
+          try { resolve(JSON.parse(data.toString("utf-8"))); }
+          catch { reject(new Error("Invalid JSON response")); }
+        });
+      });
+      request.on("error", reject);
+      request.write(body);
+      request.end();
+    });
+
+    const reply = response?.choices?.[0]?.message?.content || "...";
+    mascotChatHistory.push({ role: "assistant", content: reply });
+
+    if (mascotWindow && !mascotWindow.isDestroyed()) {
+      mascotWindow.webContents.send("mascot-chat-response", reply);
+    }
+  } catch (err: any) {
+    console.error("[mascot] Chat error:", err.message);
+    if (mascotWindow && !mascotWindow.isDestroyed()) {
+      mascotWindow.webContents.send("mascot-chat-error", "Chat error: " + err.message);
+    }
+  }
+}
+
 // ── IPC ──────────────────────────────────────────────────────
+ipcMain.on("mascot-get-config", (event) => {
+  const firstImage = getAllMedia("image", "uploaded")[0];
+  const spriteFile = firstImage ? path.basename(firstImage.filepath) : "";
+  event.returnValue = {
+    imagesDir: IMAGES_DIR,
+    spriteFile,
+    characterName: "Character",
+  };
+});
+
+ipcMain.on("mascot-toggle-chat", (_e, open: boolean) => {
+  if (!mascotWindow || mascotWindow.isDestroyed()) return;
+  const bounds = getMascotBounds(open);
+  mascotWindow.setBounds(bounds);
+});
+
+ipcMain.on("mascot-send-chat", (_e, message: string) => {
+  handleMascotChat(message);
+});
+
 ipcMain.on("chatbox-dismiss", () => {
   if (chatboxWindow && !chatboxWindow.isDestroyed()) {
     chatboxWindow.close();
   }
+  // Show mascot when VN chatbox dismisses
+  createMascotWindow();
 });
 
 ipcMain.on("chatbox-reshow", () => {
@@ -230,8 +381,36 @@ ipcMain.on("chatbox-get-config", (event) => {
   };
 });
 
-// ── xAI Generation dialogs ───────────────────────────────────
-function openApiKeyDialog() {
+// ── OpenRouter Auth ───────────────────────────────────────
+let apikeyWindow: BrowserWindow | null = null;
+
+async function doOpenRouterAuth() {
+  try {
+    console.log("[openrouter] Starting OAuth flow...");
+    const key = await startOAuthFlow();
+    console.log("[openrouter] Authenticated! Key length:", key.length);
+    rebuildTrayMenu();
+  } catch (err: any) {
+    console.error("[openrouter] OAuth failed:", err.message);
+  }
+}
+
+// ── OpenRouter API Key Dialog (manual fallback) ──────────
+let openrouterKeyWindow: BrowserWindow | null = null;
+
+function openOpenRouterKeyDialog() {
+  if (openrouterKeyWindow && !openrouterKeyWindow.isDestroyed()) { openrouterKeyWindow.focus(); return; }
+  openrouterKeyWindow = new BrowserWindow({
+    width: 400, height: 200, frame: false, resizable: false,
+    alwaysOnTop: true, skipTaskbar: false,
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
+  });
+  openrouterKeyWindow.loadFile(path.join(__dirname, "..", "..", "openrouter-key-dialog.html"));
+  openrouterKeyWindow.on("closed", () => { openrouterKeyWindow = null; });
+}
+
+// ── xAI API Key Dialog ───────────────────────────────────
+function openXaiKeyDialog() {
   if (apikeyWindow && !apikeyWindow.isDestroyed()) { apikeyWindow.focus(); return; }
   apikeyWindow = new BrowserWindow({
     width: 400, height: 200, frame: false, resizable: false,
@@ -243,10 +422,11 @@ function openApiKeyDialog() {
 }
 
 function openPromptDialog() {
-  if (!hasApiKey()) { openApiKeyDialog(); return; }
+  // Need at least one provider authenticated
+  if (!hasOpenRouterKey() && !hasXaiKey()) { openOpenRouterKeyDialog(); return; }
   if (promptWindow && !promptWindow.isDestroyed()) { promptWindow.focus(); return; }
   promptWindow = new BrowserWindow({
-    width: 480, height: 520, frame: false, resizable: false,
+    width: 480, height: 560, frame: false, resizable: false,
     alwaysOnTop: true, skipTaskbar: false,
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
@@ -265,12 +445,23 @@ function reloadWallpaper(filePath: string) {
   console.log(`[forever-papere] Reloading wallpaper on ${wallpaperWindows.length} display(s):`, fileUrl);
 }
 
-// ── xAI IPC handlers ────────────────────────────────────────
+// ── IPC handlers ─────────────────────────────────────────
+ipcMain.on("openrouter-key-save", (_e, key: string) => {
+  saveOpenRouterKey(key);
+  if (openrouterKeyWindow && !openrouterKeyWindow.isDestroyed()) openrouterKeyWindow.close();
+  rebuildTrayMenu();
+  console.log("[forever-papere] OpenRouter API key saved");
+});
+
+ipcMain.on("openrouter-key-cancel", () => {
+  if (openrouterKeyWindow && !openrouterKeyWindow.isDestroyed()) openrouterKeyWindow.close();
+});
+
 ipcMain.on("apikey-save", (_e, key: string) => {
-  saveApiKey(key);
+  saveXaiKey(key);
   if (apikeyWindow && !apikeyWindow.isDestroyed()) apikeyWindow.close();
   rebuildTrayMenu();
-  console.log("[forever-papere] API key saved");
+  console.log("[forever-papere] xAI API key saved");
 });
 
 ipcMain.on("apikey-cancel", () => {
@@ -290,15 +481,20 @@ ipcMain.on("prompt-get-config", (event) => {
   } catch (_) { /* no images dir */ }
   const primary = screen.getPrimaryDisplay();
   const detectedAspect = detectAspectRatio(primary.bounds.width, primary.bounds.height);
-  event.returnValue = { imagesDir: IMAGES_DIR, characterImages, detectedAspect };
+  event.returnValue = {
+    imagesDir: IMAGES_DIR,
+    characterImages,
+    detectedAspect,
+    hasOpenRouter: hasOpenRouterKey(),
+    hasXai: hasXaiKey(),
+  };
 });
 
 ipcMain.on("prompt-submit", async (_e, opts: {
   prompt: string; type: string; source: string; aspectRatio: string;
-  duration: number; resolution: string;
+  duration: number; resolution: string; provider: string;
 }) => {
   isGenerating = true;
-  // Resolve source image path and character from DB
   let sourceImagePath: string | undefined;
   let sourceImageId: number | undefined;
   let characterId: number | undefined;
@@ -312,43 +508,62 @@ ipcMain.on("prompt-submit", async (_e, opts: {
     }
   }
 
+  const sendStatus = (msg: string) => {
+    if (promptWindow && !promptWindow.isDestroyed()) promptWindow.webContents.send("generation-status", msg);
+  };
+
   try {
     let result;
-    if (opts.type === "video" && sourceImagePath) {
-      // Two-step: image-edit → animate
-      result = await generateCharacterVideo({
-        prompt: opts.prompt,
-        duration: opts.duration,
-        aspectRatio: opts.aspectRatio,
-        resolution: opts.resolution,
-        sourceImagePath,
-        sourceImageId,
-        characterId,
-      }, (msg) => {
-        if (promptWindow && !promptWindow.isDestroyed()) {
-          promptWindow.webContents.send("generation-status", msg);
-        }
-      });
-    } else if (opts.type === "video") {
-      if (promptWindow) promptWindow.webContents.send("generation-status", "Generating video... this may take several minutes.");
-      result = await generateVideo({
-        prompt: opts.prompt,
-        duration: opts.duration,
-        aspectRatio: opts.aspectRatio,
-        resolution: opts.resolution,
-      });
+
+    if (opts.provider === "xai") {
+      // ── xAI: supports both image and video ──
+      if (opts.type === "video" && sourceImagePath) {
+        result = await generateCharacterVideo({
+          prompt: opts.prompt,
+          duration: opts.duration,
+          aspectRatio: opts.aspectRatio,
+          resolution: opts.resolution,
+          sourceImagePath,
+          sourceImageId,
+          characterId,
+        }, sendStatus);
+      } else if (opts.type === "video") {
+        sendStatus("Generating video... this may take several minutes.");
+        result = await generateVideo({
+          prompt: opts.prompt,
+          duration: opts.duration,
+          aspectRatio: opts.aspectRatio,
+          resolution: opts.resolution,
+        });
+      } else {
+        sendStatus(sourceImagePath ? "Generating image from character..." : "Generating image...");
+        result = await xaiGenerateImage({
+          prompt: opts.prompt,
+          aspectRatio: opts.aspectRatio,
+          sourceImagePath,
+          sourceImageId,
+          characterId,
+        });
+      }
     } else {
-      const msg = sourceImagePath
-        ? "Generating image from character PNG..."
-        : "Generating image...";
-      if (promptWindow) promptWindow.webContents.send("generation-status", msg);
-      result = await generateImage({
-        prompt: opts.prompt,
-        aspectRatio: opts.aspectRatio,
-        sourceImagePath,
-        sourceImageId,
-        characterId,
-      });
+      // ── OpenRouter: image generation only ──
+      if (sourceImagePath) {
+        result = await generateCharacterWallpaper({
+          prompt: opts.prompt,
+          aspectRatio: opts.aspectRatio,
+          imageSize: "2K",
+          sourceImagePath,
+          sourceImageId,
+          characterId,
+        }, sendStatus);
+      } else {
+        sendStatus("Generating wallpaper...");
+        result = await orGenerateImage({
+          prompt: opts.prompt,
+          aspectRatio: opts.aspectRatio,
+          imageSize: "2K",
+        });
+      }
     }
 
     if (result.success && result.filePath) {
@@ -358,7 +573,7 @@ ipcMain.on("prompt-submit", async (_e, opts: {
       if (promptWindow) promptWindow.webContents.send("generation-error", result.error || "Unknown error");
     }
   } catch (err: any) {
-    console.error("[xai] Generation error:", err);
+    console.error("[generation] Error:", err);
     if (promptWindow) promptWindow.webContents.send("generation-error", err.message || "Generation failed");
   } finally {
     isGenerating = false;
@@ -413,12 +628,22 @@ function rebuildTrayMenu() {
     },
     { type: "separator" },
     {
-      label: "Generate Wallpaper (xAI)",
+      label: "Generate Wallpaper",
       click: () => openPromptDialog(),
     },
+    { type: "separator" },
+    { label: "Providers", enabled: false },
     {
-      label: hasApiKey() ? "Change xAI API Key" : "Set xAI API Key",
-      click: () => openApiKeyDialog(),
+      label: hasOpenRouterKey() ? "OpenRouter ✓ (paste key)" : "Set OpenRouter Key",
+      click: () => openOpenRouterKeyDialog(),
+    },
+    {
+      label: "Sign in with OpenRouter (OAuth)",
+      click: () => doOpenRouterAuth(),
+    },
+    {
+      label: hasXaiKey() ? "xAI ✓" : "Set xAI API Key",
+      click: () => openXaiKeyDialog(),
     },
     { type: "separator" },
     {
@@ -449,8 +674,8 @@ let autoGenTimer: ReturnType<typeof setInterval> | null = null;
 let isGenerating = false;
 
 async function autoGenerate() {
-  if (!hasApiKey()) {
-    console.log("[auto-gen] No API key set, skipping.");
+  if (!hasOpenRouterKey() && !hasXaiKey()) {
+    console.log("[auto-gen] No providers configured, skipping.");
     return;
   }
   if (isGenerating) {
@@ -482,7 +707,12 @@ async function autoGenerate() {
     console.log(`[auto-gen] Primary display: ${primary.bounds.width}x${primary.bounds.height} → aspect ${aspectRatio}`);
 
     let result;
-    if (sourceImagePath) {
+    const useXai = hasXaiKey();
+    const useOpenRouter = hasOpenRouterKey();
+
+    if (useXai && sourceImagePath) {
+      // xAI: two-step character video
+      console.log("[auto-gen] Using xAI for character video");
       result = await generateCharacterVideo({
         prompt,
         duration: 5,
@@ -492,13 +722,37 @@ async function autoGenerate() {
         sourceImageId,
         characterId,
       }, (msg) => console.log("[auto-gen]", msg));
-    } else {
+    } else if (useXai) {
+      // xAI: text-to-video
+      console.log("[auto-gen] Using xAI for text-to-video");
       result = await generateVideo({
         prompt,
         duration: 5,
         aspectRatio,
         resolution: "1080p",
       });
+    } else if (useOpenRouter && sourceImagePath) {
+      // OpenRouter: character image wallpaper
+      console.log("[auto-gen] Using OpenRouter for character wallpaper");
+      result = await generateCharacterWallpaper({
+        prompt,
+        aspectRatio,
+        imageSize: "2K",
+        sourceImagePath,
+        sourceImageId,
+        characterId,
+      }, (msg) => console.log("[auto-gen]", msg));
+    } else if (useOpenRouter) {
+      // OpenRouter: text-to-image
+      console.log("[auto-gen] Using OpenRouter for text-to-image");
+      result = await orGenerateImage({
+        prompt,
+        aspectRatio,
+        imageSize: "2K",
+      });
+    } else {
+      console.log("[auto-gen] No providers configured, skipping.");
+      return;
     }
 
     if (result.success && result.filePath) {
