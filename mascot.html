@@ -40,7 +40,7 @@
     }
     #chat.open { display: flex; }
 
-    /* Top box: latest message */
+    /* Top box: latest received/typed message */
     #messageBox {
       background: rgba(20, 20, 45, 0.92);
       border: 1px solid rgba(99, 102, 241, 0.4);
@@ -62,7 +62,7 @@
     #messageBox .sender.you { color: #6bff8b; }
     #messageBox .sender.char { color: #b8b8ff; }
 
-    /* Bottom box: input */
+    /* Bottom box: input / waiting indicator */
     #inputBox {
       display: flex;
       gap: 6px;
@@ -70,6 +70,7 @@
       border: 1px solid rgba(99, 102, 241, 0.4);
       border-radius: 12px;
       padding: 8px 10px;
+      align-items: center;
     }
     #inputField {
       flex: 1;
@@ -80,6 +81,19 @@
       outline: none;
     }
     #inputField::placeholder { color: #6b6b9e; }
+    #waitingDots {
+      display: none;
+      flex: 1;
+      color: #8888bb;
+      font-size: 16px;
+      font-style: italic;
+      letter-spacing: 3px;
+      animation: pulse 1.2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
     #sendBtn {
       background: #6366f1;
       border: none;
@@ -92,11 +106,6 @@
     }
     #sendBtn:hover { background: #5558e6; }
     #sendBtn:disabled { opacity: 0.5; cursor: default; }
-
-    .typing {
-      color: #8888bb;
-      font-style: italic;
-    }
   </style>
 </head>
 <body>
@@ -109,6 +118,7 @@
       </div>
       <div id="inputBox">
         <input id="inputField" type="text" placeholder="Type a message..." />
+        <span id="waitingDots">...</span>
         <button id="sendBtn">Send</button>
       </div>
     </div>
@@ -119,10 +129,10 @@
     console.log("[mascot] Config:", JSON.stringify(config));
     const sprite = document.getElementById("sprite");
     const chat = document.getElementById("chat");
-    const messageBox = document.getElementById("messageBox");
     const msgSender = document.getElementById("msgSender");
     const msgText = document.getElementById("msgText");
     const inputField = document.getElementById("inputField");
+    const waitingDots = document.getElementById("waitingDots");
     const sendBtn = document.getElementById("sendBtn");
 
     let chatOpen = false;
@@ -131,53 +141,42 @@
     // Load sprite using file:// URL
     if (config.spriteFile && config.imagesDir) {
       const url = "file:///" + (config.imagesDir + "/" + config.spriteFile).replace(/\\/g, "/");
-      console.log("[mascot] Loading sprite:", url);
       sprite.src = url;
       sprite.onload = () => console.log("[mascot] Sprite loaded OK");
       sprite.onerror = (e) => console.error("[mascot] Sprite load FAILED:", e);
-    } else {
-      console.log("[mascot] No sprite config");
     }
 
     // Click sprite to toggle chat
     sprite.addEventListener("click", () => {
-      console.log("[mascot] Sprite clicked!");
       chatOpen = !chatOpen;
       chat.classList.toggle("open", chatOpen);
       window.mascotAPI.toggleChat(chatOpen);
       if (chatOpen) inputField.focus();
     });
 
-    // Also listen for clicks anywhere on the document
-    document.addEventListener("click", (e) => {
-      console.log("[mascot] Document clicked at", e.clientX, e.clientY, "target:", e.target.id || e.target.tagName);
-    });
-
-    function showMessage(sender, text, isChar) {
+    function showLatestMessage(sender, text, isChar) {
       msgSender.textContent = sender;
       msgSender.className = "sender " + (isChar ? "char" : "you");
-      msgText.innerHTML = text;
-      msgText.className = "";
+      msgText.textContent = text;
     }
 
-    function showTyping() {
-      msgSender.textContent = config.characterName || "Character";
-      msgSender.className = "sender char";
-      msgText.textContent = "...";
-      msgText.className = "typing";
+    function setWaiting(on) {
+      waiting = on;
+      inputField.style.display = on ? "none" : "block";
+      waitingDots.style.display = on ? "block" : "none";
+      sendBtn.disabled = on;
     }
 
     function sendMessage() {
       const text = inputField.value.trim();
       if (!text || waiting) return;
 
-      // Show user's message in top box
-      showMessage("You", text, false);
+      // Your message goes to the top box
+      showLatestMessage("You", text, false);
       inputField.value = "";
-      inputField.placeholder = "...";
-      inputField.disabled = true;
-      sendBtn.disabled = true;
-      waiting = true;
+
+      // Bottom box shows "..." while waiting
+      setWaiting(true);
 
       // Send to main process
       window.mascotAPI.sendChat(text);
@@ -188,22 +187,17 @@
       if (e.key === "Enter") sendMessage();
     });
 
-    // Receive response from OpenRouter
+    // AI response: push to top box, restore input
     window.mascotAPI.onResponse((response) => {
-      waiting = false;
-      inputField.disabled = false;
-      inputField.placeholder = "Type a message...";
-      sendBtn.disabled = false;
-      showMessage(config.characterName || "Character", response, true);
+      showLatestMessage(config.characterName || "Character", response, true);
+      setWaiting(false);
       inputField.focus();
     });
 
     window.mascotAPI.onError((error) => {
-      waiting = false;
-      inputField.disabled = false;
-      inputField.placeholder = "Type a message...";
-      sendBtn.disabled = false;
-      showMessage("System", error, true);
+      showLatestMessage("System", error, true);
+      setWaiting(false);
+      inputField.focus();
     });
   </script>
 </body>

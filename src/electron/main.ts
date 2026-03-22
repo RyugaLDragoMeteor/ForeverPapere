@@ -1,17 +1,38 @@
 // ForeverPapere — Electron main process
 // Wallpaper window embedded behind desktop icons + VN chatbox overlay + tray settings.
 
-import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, nativeImage } from "electron";
+import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, nativeImage, net } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import { generateImage as orGenerateImage, generateCharacterWallpaper } from "./openrouter-api";
-import { startOAuthFlow, hasApiKey as hasOpenRouterKey, saveApiKey as saveOpenRouterKey } from "./openrouter-auth";
+import { startOAuthFlow, hasApiKey as hasOpenRouterKey, saveApiKey as saveOpenRouterKey, getApiKey as getOpenRouterKey } from "./openrouter-auth";
 import { generateImage as xaiGenerateImage, generateVideo, generateCharacterVideo, saveApiKey as saveXaiKey, hasApiKey as hasXaiKey } from "./xai-api";
 import { closeDb, importMedia, getAllMedia, getDefaultWallpaper, ensureCharacter, linkMediaToCharacter, VIDEOS_DIR, IMAGES_DIR, MEDIA_DIR } from "./media-db";
 import { ChatboxPosition, detectAspectRatio, computeChatboxBounds, createTrayIconBuffer, getSpriteAlign, CHATBOX_WIDTH, CHATBOX_HEIGHT } from "./utils";
 
 function getNative(): typeof import("./wallpaper-native") {
   return require("./wallpaper-native");
+}
+
+// ── Config helpers (shared config.json in %APPDATA%) ─────
+function getConfigPath(): string {
+  return path.join(process.env.APPDATA || process.env.HOME || ".", "ForeverPapere", "config.json");
+}
+function readAppConfig(): Record<string, unknown> {
+  try { return JSON.parse(fs.readFileSync(getConfigPath(), "utf-8")); } catch { return {}; }
+}
+function writeAppConfig(config: Record<string, unknown>): void {
+  const dir = path.dirname(getConfigPath());
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+}
+function hasSeenIntro(): boolean {
+  return readAppConfig().introSeen === true;
+}
+function markIntroSeen(): void {
+  const config = readAppConfig();
+  config.introSeen = true;
+  writeAppConfig(config);
 }
 
 let wallpaperWindows: BrowserWindow[] = [];
@@ -89,7 +110,14 @@ function createWallpaperWindow() {
       }
 
       readyCount++;
-      if (readyCount === displays.length) createChatboxWindow();
+      if (readyCount === displays.length) {
+        if (hasSeenIntro()) {
+          // Skip VN chatbox, go straight to mascot
+          createMascotWindow();
+        } else {
+          createChatboxWindow();
+        }
+      }
     });
 
     win.on("closed", () => {
@@ -230,37 +258,33 @@ async function handleMascotChat(userMessage: string) {
   }
 
   try {
-    const { getApiKey: getORKey } = require("./openrouter-auth");
-    const apiKey = getORKey();
-    const { net } = require("electron");
+    const apiKey = getOpenRouterKey();
+    console.log("[mascot] Sending chat, key length:", apiKey.length, "history:", mascotChatHistory.length);
 
     const body = JSON.stringify({
-      model: "google/gemini-2.5-flash-preview",
+      model: "openrouter/free",
       messages: mascotChatHistory,
       max_tokens: 200,
     });
 
-    const response: any = await new Promise((resolve, reject) => {
-      const request = net.request({
-        url: "https://openrouter.ai/api/v1/chat/completions",
-        method: "POST",
-      });
-      request.setHeader("Content-Type", "application/json");
-      request.setHeader("Authorization", `Bearer ${apiKey}`);
-      let data = Buffer.alloc(0);
-      request.on("response", (res: any) => {
-        res.on("data", (chunk: Buffer) => { data = Buffer.concat([data, chunk]); });
-        res.on("end", () => {
-          try { resolve(JSON.parse(data.toString("utf-8"))); }
-          catch { reject(new Error("Invalid JSON response")); }
-        });
-      });
-      request.on("error", reject);
-      request.write(body);
-      request.end();
+    const res = await net.fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body,
     });
 
-    const reply = response?.choices?.[0]?.message?.content || "...";
+    const responseData = await res.json();
+    console.log("[mascot] Response status:", res.status, "ok:", res.ok);
+
+    if (!res.ok) {
+      throw new Error(`API error ${res.status}: ${JSON.stringify(responseData)}`);
+    }
+
+    const reply = responseData?.choices?.[0]?.message?.content || "...";
+    console.log("[mascot] Reply:", reply.slice(0, 100));
     mascotChatHistory.push({ role: "assistant", content: reply });
 
     if (mascotWindow && !mascotWindow.isDestroyed()) {
@@ -299,6 +323,8 @@ ipcMain.on("chatbox-dismiss", () => {
   if (chatboxWindow && !chatboxWindow.isDestroyed()) {
     chatboxWindow.close();
   }
+  // Mark intro as complete so it doesn't show again
+  markIntroSeen();
   // Show mascot when VN chatbox dismisses
   createMascotWindow();
 });
@@ -789,6 +815,25 @@ function cleanup() {
   wallpaperWindows = [];
   if (chatboxWindow && !chatboxWindow.isDestroyed()) chatboxWindow.close();
   if (tray) { tray.destroy(); tray = null; }
+}
+
+// ── Single instance: newest takes over ───────────────────────
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  // Another instance is already running — it will receive 'second-instance'
+  // and quit itself, then we relaunch
+  console.log("[forever-papere] Another instance detected, waiting for it to quit...");
+  setTimeout(() => {
+    app.relaunch();
+    app.exit(0);
+  }, 1500);
+} else {
+  // We have the lock — if a newer instance launches, quit ourselves
+  app.on("second-instance", () => {
+    console.log("[forever-papere] Newer instance detected, yielding...");
+    cleanup();
+    app.quit();
+  });
 }
 
 // ── App lifecycle ────────────────────────────────────────────

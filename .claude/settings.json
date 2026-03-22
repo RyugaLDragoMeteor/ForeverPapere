@@ -13,7 +13,8 @@
       "Bash(powershell -Command \"Get-Process electron -ErrorAction SilentlyContinue | Stop-Process -Force\")",
       "Bash(rm -rf \"$APPDATA/ForeverPapere/media\")",
       "Read(//c/Users/joshu/wallpaper_mambo/$APPDATA/ForeverPapere/**)",
-      "Read(//tmp/lively/src/Lively/Lively/Core/**)"
+      "Read(//tmp/lively/src/Lively/Lively/Core/**)",
+      "Bash(npx vitest:*)"
     ]
   }
 }
