@@ -901,15 +901,28 @@ async function captureAndComment() {
     })();
 
     const visionModels = [
-      "google/gemma-3-27b-it:free",
+      "nvidia/nemotron-nano-12b-v2-vl:free",
       "mistralai/mistral-small-3.1-24b-instruct:free",
+      "google/gemma-3-27b-it:free",
       "google/gemma-3-12b-it:free",
-      "google/gemma-3-4b-it:free",
     ];
+
+    const msgBody = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: `You are ${characterName}, a friendly desktop companion. You can see the user's screen. Make a brief, casual comment (1-2 sentences) about what they're doing. Be playful, encouraging, or mildly sarcastic. Keep it short and natural. What do you think about what I'm doing?` },
+            { type: "image_url", image_url: { url: dataUri } },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    };
 
     let comment: string | undefined;
     for (const model of visionModels) {
-      scLog(`[screen-comment] Trying model: ${model}`);
+      scLog(`[screen-comment] Trying: ${model}`);
       try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
@@ -919,39 +932,21 @@ async function captureAndComment() {
             "HTTP-Referer": "https://github.com/RyugaLDragoMeteor/ForeverPapere",
             "X-Title": "ForeverPapere",
           },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: "system",
-                content: `You are ${characterName}, a friendly desktop companion. You can see the user's screen. Make a brief, casual comment (1-2 sentences) about what they're doing. Be playful, encouraging, or mildly sarcastic. Don't be annoying or repetitive. Keep it short and natural, like a friend glancing at your screen.`,
-              },
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: "What do you think about what I'm doing?" },
-                  { type: "image_url", image_url: { url: dataUri } },
-                ],
-              },
-            ],
-            max_tokens: 100,
-          }),
+          body: JSON.stringify({ model, ...msgBody }),
         });
-
         if (response.ok) {
           const data = await response.json();
           comment = data.choices?.[0]?.message?.content?.trim();
-          if (comment) {
-            scLog(`[screen-comment] Success with ${model}`);
-            break;
-          }
+          scLog(`[screen-comment] ${model} ok, comment=${comment ? comment.substring(0, 50) : "EMPTY"}`);
+          if (comment) break;
         } else {
-          const err = await response.text();
-          scLog(`[screen-comment] ${model} failed (${response.status}), trying next...`);
+          scLog(`[screen-comment] ${model} → ${response.status}`);
         }
       } catch (e: any) {
         scLog(`[screen-comment] ${model} error: ${e.message}`);
       }
+      // Small delay between retries
+      await new Promise(r => setTimeout(r, 2000));
     }
 
     if (!comment) {
