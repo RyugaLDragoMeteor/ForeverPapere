@@ -208,6 +208,17 @@
       setWaiting(false);
       inputField.focus();
     });
+
+    // Unsolicited screen commentary from AI
+    window.mascotAPI.onScreenComment((comment) => {
+      showMessage(config.characterName || "Character", comment, "char");
+      // Auto-open chat if closed
+      if (!chatOpen) {
+        chatOpen = true;
+        chat.classList.add("open");
+        window.mascotAPI.toggleChat(true);
+      }
+    });
   </script>
 </body>
 </html>

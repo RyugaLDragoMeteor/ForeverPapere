@@ -12,4 +12,7 @@ contextBridge.exposeInMainWorld("mascotAPI", {
   onError: (cb: (text: string) => void) => {
     ipcRenderer.on("mascot-chat-error", (_e, text) => cb(text));
   },
+  onScreenComment: (cb: (text: string) => void) => {
+    ipcRenderer.on("mascot-screen-comment", (_e, text) => cb(text));
+  },
 });

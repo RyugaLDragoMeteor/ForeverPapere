@@ -1,7 +1,7 @@
 // ForeverPapere — Electron main process
 // Wallpaper window embedded behind desktop icons + VN chatbox overlay + tray settings.
 
-import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, nativeImage, net } from "electron";
+import { app, BrowserWindow, screen, globalShortcut, ipcMain, Tray, Menu, nativeImage, net, desktopCapturer } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import { generateImage as orGenerateImage, generateCharacterWallpaper } from "./openrouter-api";
@@ -842,10 +842,125 @@ function startAutoGeneration() {
   console.log("[auto-gen] Scheduled: on startup + every 30 minutes.");
 }
 
+// ── Periodic screen commentary ──────────────────────────────
+let screenCommentTimer: ReturnType<typeof setTimeout> | null = null;
+const SCREEN_COMMENT_MIN_MS = 45 * 60 * 1000;  // 45 min
+const SCREEN_COMMENT_MAX_MS = 120 * 60 * 1000;  // 2 hours
+
+function nextCommentDelay(): number {
+  return SCREEN_COMMENT_MIN_MS + Math.random() * (SCREEN_COMMENT_MAX_MS - SCREEN_COMMENT_MIN_MS);
+}
+
+async function captureAndComment() {
+  const orKey = getOpenRouterKey();
+  if (!orKey) {
+    console.log("[screen-comment] No OpenRouter key, skipping");
+    scheduleNextComment();
+    return;
+  }
+  if (!mascotWindow || mascotWindow.isDestroyed()) {
+    console.log("[screen-comment] No mascot window, skipping");
+    scheduleNextComment();
+    return;
+  }
+
+  try {
+    console.log("[screen-comment] Capturing screen...");
+    const sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: { width: 1280, height: 720 },
+    });
+
+    if (sources.length === 0) {
+      console.log("[screen-comment] No screen sources found");
+      scheduleNextComment();
+      return;
+    }
+
+    const source = sources[0];
+    const thumbnail = source.thumbnail;
+    const jpegBuffer = thumbnail.toJPEG(70);
+    const b64 = jpegBuffer.toString("base64");
+    const dataUri = `data:image/jpeg;base64,${b64}`;
+    console.log(`[screen-comment] Screenshot captured: ${jpegBuffer.length} bytes`);
+
+    // Send to OpenRouter with vision
+    const characterName = (() => {
+      const firstImage = getAllMedia("image", "uploaded")[0];
+      if (firstImage?.character_id) {
+        const db = JSON.parse(fs.readFileSync(path.join(process.env.APPDATA || ".", "ForeverPapere", "media.json"), "utf-8"));
+        const char = db.characters?.find((c: any) => c.id === firstImage.character_id);
+        if (char) return char.name;
+      }
+      return "Character";
+    })();
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${orKey}`,
+        "HTTP-Referer": "https://github.com/RyugaLDragoMeteor/ForeverPapere",
+        "X-Title": "ForeverPapere",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.0-flash-exp:free",
+        messages: [
+          {
+            role: "system",
+            content: `You are ${characterName}, a friendly desktop companion. You can see the user's screen. Make a brief, casual comment (1-2 sentences) about what they're doing. Be playful, encouraging, or mildly sarcastic. Don't be annoying or repetitive. Keep it short and natural, like a friend glancing at your screen.`,
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "What do you think about what I'm doing?" },
+              { type: "image_url", image_url: { url: dataUri } },
+            ],
+          },
+        ],
+        max_tokens: 100,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.log(`[screen-comment] API error ${response.status}: ${err}`);
+      scheduleNextComment();
+      return;
+    }
+
+    const data = await response.json();
+    const comment = data.choices?.[0]?.message?.content?.trim();
+    if (comment && mascotWindow && !mascotWindow.isDestroyed()) {
+      console.log(`[screen-comment] AI says: ${comment}`);
+      mascotWindow.webContents.send("mascot-screen-comment", comment);
+    }
+  } catch (err) {
+    console.error("[screen-comment] Error:", err);
+  }
+
+  scheduleNextComment();
+}
+
+function scheduleNextComment() {
+  const delay = nextCommentDelay();
+  const mins = Math.round(delay / 60000);
+  console.log(`[screen-comment] Next comment in ~${mins} minutes`);
+  screenCommentTimer = setTimeout(() => captureAndComment(), delay);
+}
+
+function startScreenCommentary() {
+  // First comment after 2-5 minutes
+  const initialDelay = (2 + Math.random() * 3) * 60 * 1000;
+  console.log(`[screen-comment] First comment in ~${Math.round(initialDelay / 60000)} minutes`);
+  screenCommentTimer = setTimeout(() => captureAndComment(), initialDelay);
+}
+
 // ── Cleanup ──────────────────────────────────────────────────
 function cleanup() {
   console.log("[forever-papere] Cleaning up...");
   if (autoGenTimer) { clearInterval(autoGenTimer); autoGenTimer = null; }
+  if (screenCommentTimer) { clearTimeout(screenCommentTimer); screenCommentTimer = null; }
   try { getNative().detach(); } catch (_) {}
   try { getNative().reset(); } catch (_) {}
   try { closeDb(); } catch (_) {}
@@ -901,6 +1016,7 @@ app.on("ready", () => {
   console.log("[forever-papere] Running! Ctrl+Alt+H = toggle chatbox, Ctrl+Alt+Q = quit.");
 
   startAutoGeneration();
+  startScreenCommentary();
 });
 
 // Handle external kill (taskkill, SIGTERM, etc.)
