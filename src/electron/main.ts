@@ -853,26 +853,31 @@ function nextCommentDelay(): number {
 
 async function captureAndComment() {
   const orKey = getOpenRouterKey();
+  const scLog = (msg: string) => {
+    console.log(msg);
+    try { fs.appendFileSync(path.join(MEDIA_DIR, "..", "screen-comment.log"), new Date().toISOString() + " " + msg + "\n"); } catch (_) {}
+  };
+  scLog("[screen-comment] orKey: " + (orKey ? "present" : "MISSING") + " mascot: " + (mascotWindow && !mascotWindow.isDestroyed() ? "present" : "MISSING"));
   if (!orKey) {
-    console.log("[screen-comment] No OpenRouter key, skipping");
+    scLog("[screen-comment] No OpenRouter key, skipping");
     scheduleNextComment();
     return;
   }
   if (!mascotWindow || mascotWindow.isDestroyed()) {
-    console.log("[screen-comment] No mascot window, skipping");
+    scLog("[screen-comment] No mascot window, skipping");
     scheduleNextComment();
     return;
   }
 
   try {
-    console.log("[screen-comment] Capturing screen...");
+    scLog("[screen-comment] Capturing screen...");
     const sources = await desktopCapturer.getSources({
       types: ["screen"],
       thumbnailSize: { width: 1280, height: 720 },
     });
 
     if (sources.length === 0) {
-      console.log("[screen-comment] No screen sources found");
+      scLog("[screen-comment] No screen sources found");
       scheduleNextComment();
       return;
     }
@@ -882,7 +887,7 @@ async function captureAndComment() {
     const jpegBuffer = thumbnail.toJPEG(70);
     const b64 = jpegBuffer.toString("base64");
     const dataUri = `data:image/jpeg;base64,${b64}`;
-    console.log(`[screen-comment] Screenshot captured: ${jpegBuffer.length} bytes`);
+    scLog(`[screen-comment] Screenshot captured: ${jpegBuffer.length} bytes`);
 
     // Send to OpenRouter with vision
     const characterName = (() => {
@@ -895,48 +900,73 @@ async function captureAndComment() {
       return "Character";
     })();
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${orKey}`,
-        "HTTP-Referer": "https://github.com/RyugaLDragoMeteor/ForeverPapere",
-        "X-Title": "ForeverPapere",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.0-flash-exp:free",
-        messages: [
-          {
-            role: "system",
-            content: `You are ${characterName}, a friendly desktop companion. You can see the user's screen. Make a brief, casual comment (1-2 sentences) about what they're doing. Be playful, encouraging, or mildly sarcastic. Don't be annoying or repetitive. Keep it short and natural, like a friend glancing at your screen.`,
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "What do you think about what I'm doing?" },
-              { type: "image_url", image_url: { url: dataUri } },
-            ],
-          },
-        ],
-        max_tokens: 100,
-      }),
-    });
+    const visionModels = [
+      "google/gemma-3-27b-it:free",
+      "mistralai/mistral-small-3.1-24b-instruct:free",
+      "google/gemma-3-12b-it:free",
+      "google/gemma-3-4b-it:free",
+    ];
 
-    if (!response.ok) {
-      const err = await response.text();
-      console.log(`[screen-comment] API error ${response.status}: ${err}`);
+    let comment: string | undefined;
+    for (const model of visionModels) {
+      scLog(`[screen-comment] Trying model: ${model}`);
+      try {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${orKey}`,
+            "HTTP-Referer": "https://github.com/RyugaLDragoMeteor/ForeverPapere",
+            "X-Title": "ForeverPapere",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: "system",
+                content: `You are ${characterName}, a friendly desktop companion. You can see the user's screen. Make a brief, casual comment (1-2 sentences) about what they're doing. Be playful, encouraging, or mildly sarcastic. Don't be annoying or repetitive. Keep it short and natural, like a friend glancing at your screen.`,
+              },
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: "What do you think about what I'm doing?" },
+                  { type: "image_url", image_url: { url: dataUri } },
+                ],
+              },
+            ],
+            max_tokens: 100,
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          comment = data.choices?.[0]?.message?.content?.trim();
+          if (comment) {
+            scLog(`[screen-comment] Success with ${model}`);
+            break;
+          }
+        } else {
+          const err = await response.text();
+          scLog(`[screen-comment] ${model} failed (${response.status}), trying next...`);
+        }
+      } catch (e: any) {
+        scLog(`[screen-comment] ${model} error: ${e.message}`);
+      }
+    }
+
+    if (!comment) {
+      scLog("[screen-comment] All models failed");
       scheduleNextComment();
       return;
     }
-
-    const data = await response.json();
-    const comment = data.choices?.[0]?.message?.content?.trim();
     if (comment && mascotWindow && !mascotWindow.isDestroyed()) {
-      console.log(`[screen-comment] AI says: ${comment}`);
+      scLog(`[screen-comment] AI says: ${comment}`);
       mascotWindow.webContents.send("mascot-screen-comment", comment);
+    } else {
+      scLog(`[screen-comment] No comment or mascot gone. comment=${!!comment}`);
     }
-  } catch (err) {
-    console.error("[screen-comment] Error:", err);
+  } catch (err: any) {
+    scLog("[screen-comment] Error: " + (err?.message || err));
   }
 
   scheduleNextComment();
