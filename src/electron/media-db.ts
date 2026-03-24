@@ -2,22 +2,30 @@
 import * as path from "path";
 import * as fs from "fs";
 
-// ── App data directory ──────────────────────────────────────
-const APP_DIR = path.join(
-  process.env.APPDATA || process.env.HOME || ".",
-  "ForeverPapere"
-);
-const MEDIA_DIR = path.join(APP_DIR, "media");
-const IMAGES_DIR = path.join(MEDIA_DIR, "images");
-const VIDEOS_DIR = path.join(MEDIA_DIR, "videos");
-const DB_PATH = path.join(APP_DIR, "media.json");
+// ── App data directory (re-evaluated via getters so tests can override APPDATA) ──
+function getAppDir() { return path.join(process.env.APPDATA || process.env.HOME || ".", "ForeverPapere"); }
+function getMediaDir() { return path.join(getAppDir(), "media"); }
+function getImagesDir() { return path.join(getMediaDir(), "images"); }
+function getVideosDir() { return path.join(getMediaDir(), "videos"); }
+function getDbPath() { return path.join(getAppDir(), "media.json"); }
 
-// Ensure directories exist
-for (const dir of [APP_DIR, MEDIA_DIR, IMAGES_DIR, VIDEOS_DIR]) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+// Lazy-init: ensure directories exist on first access
+let dirsEnsured = false;
+function ensureDirs() {
+  if (dirsEnsured) return;
+  for (const dir of [getAppDir(), getMediaDir(), getImagesDir(), getVideosDir()]) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  }
+  dirsEnsured = true;
 }
 
-export { APP_DIR, MEDIA_DIR, IMAGES_DIR, VIDEOS_DIR };
+// Public aliases (evaluate at call time)
+export const APP_DIR = getAppDir();
+export const MEDIA_DIR = getMediaDir();
+export const IMAGES_DIR = getImagesDir();
+export const VIDEOS_DIR = getVideosDir();
+
+ensureDirs();
 
 // ── Types ───────────────────────────────────────────────────
 export type MediaType = "image" | "video";
@@ -58,8 +66,9 @@ let store: MediaStore | null = null;
 
 function load(): MediaStore {
   if (store) return store;
+  ensureDirs();
   try {
-    const raw = JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
+    const raw = JSON.parse(fs.readFileSync(getDbPath(), "utf-8"));
     // Migrate old schema if needed
     if (!raw.characters) raw.characters = [];
     if (!raw.nextCharacterId) raw.nextCharacterId = 1;
@@ -74,13 +83,13 @@ function load(): MediaStore {
   } catch {
     store = { nextId: 1, nextCharacterId: 1, records: [], characters: [] };
   }
-  console.log("[media-db] Loaded", store!.records.length, "media,", store!.characters.length, "characters from", DB_PATH);
+  console.log("[media-db] Loaded", store!.records.length, "media,", store!.characters.length, "characters from", getDbPath());
   return store!;
 }
 
 function save(): void {
   if (!store) return;
-  fs.writeFileSync(DB_PATH, JSON.stringify(store, null, 2));
+  fs.writeFileSync(getDbPath(), JSON.stringify(store, null, 2));
 }
 
 // ── CRUD operations ─────────────────────────────────────────
@@ -317,5 +326,7 @@ export function getDefaultWallpaper(): MediaRecord | null {
 
 export function closeDb(): void {
   if (store) save();
+  store = null;
+  dirsEnsured = false;
   console.log("[media-db] Store saved");
 }

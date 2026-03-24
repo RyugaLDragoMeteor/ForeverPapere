@@ -18,10 +18,11 @@
     "test:unit": "vitest run tests/unit"
   },
   "dependencies": {
+    "animejs": "^3.2.2",
     "koffi": "^2.9.0"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
+    "electron": "^33.4.11",
     "electron-builder": "^25.1.0",
     "esbuild": "^0.20.0",
     "typescript": "^5.4.0",

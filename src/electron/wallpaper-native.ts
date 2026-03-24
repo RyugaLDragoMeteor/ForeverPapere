@@ -46,9 +46,9 @@ const IsWindow = user32.func("IsWindow", BOOL, [HWND]);
 const MoveWindow = user32.func("MoveWindow", BOOL, [HWND, "int", "int", "int", "int", BOOL]);
 const Sleep = kernel32.func("Sleep", "void", [DWORD]);
 
-// POINT struct for MapWindowPoints
-const POINT = koffi.struct("POINT", { x: "long", y: "long" });
-const MapWindowPoints = user32.func("MapWindowPoints", "int", [HWND, HWND, koffi.inout(koffi.pointer(POINT)), UINT]);
+// MapWindowPoints / GetCursorPos use raw buffers (8 bytes = two int32 POINT fields)
+const MapWindowPoints = user32.func("MapWindowPoints", "int", [HWND, HWND, "void*", UINT]);
+
 
 // ── Win32 constants ──────────────────────────────────────────
 const GWL_STYLE = -16;
@@ -237,10 +237,12 @@ export function attach(hwndBuffer: Buffer, screenWidth?: number, screenHeight?: 
 
     // Step 3: MapWindowPoints — map {0,0} from window's client area to WorkerW
     // (like Lively: maps the window's top-left corner to WorkerW coords)
-    const pts = [{ x: 0, y: 0 }];
-    MapWindowPoints(hwnd, workerW, pts, 1);
-    const mappedX = pts[0].x;
-    const mappedY = pts[0].y;
+    const ptsBuf = Buffer.alloc(8); // POINT: two int32 (long)
+    ptsBuf.writeInt32LE(0, 0); // x
+    ptsBuf.writeInt32LE(0, 4); // y
+    MapWindowPoints(hwnd, workerW, ptsBuf, 1);
+    const mappedX = ptsBuf.readInt32LE(0);
+    const mappedY = ptsBuf.readInt32LE(4);
     console.log(`[native] Mapped pos: (${mappedX},${mappedY})`);
 
     // Step 4: SetParent to WorkerW
@@ -323,8 +325,7 @@ export function reset(): boolean {
 const VK_MBUTTON = 0x04;
 const GetAsyncKeyState = user32.func("GetAsyncKeyState", "short", ["int"]);
 
-const POINT_STRUCT = koffi.struct("CURSORPOINT", { x: "long", y: "long" });
-const GetCursorPos = user32.func("GetCursorPos", BOOL, [koffi.inout(POINT_STRUCT)]);
+const GetCursorPos = user32.func("GetCursorPos", BOOL, ["void*"]);
 
 let mclickTimer: ReturnType<typeof setInterval> | null = null;
 let mclickWasDown = false;
@@ -336,9 +337,9 @@ export function startMiddleClickHook(cb: (x: number, y: number) => void): boolea
     const isDown = (state & 0x8000) !== 0;
     if (isDown && !mclickWasDown) {
       // Middle button just pressed — get cursor position
-      const pt = { x: 0, y: 0 };
-      GetCursorPos(pt);
-      cb(pt.x, pt.y);
+      const ptBuf = Buffer.alloc(8);
+      GetCursorPos(ptBuf);
+      cb(ptBuf.readInt32LE(0), ptBuf.readInt32LE(4));
     }
     mclickWasDown = isDown;
   }, 50); // poll every 50ms — responsive enough, negligible overhead
@@ -351,5 +352,76 @@ export function stopMiddleClickHook(): void {
     clearInterval(mclickTimer);
     mclickTimer = null;
     console.log("[native] Middle-click poll stopped");
+  }
+}
+
+// ── Fast screen capture via Win32 GDI BitBlt ────────────────
+const gdi32 = koffi.load("gdi32.dll");
+const HDC = "intptr_t";
+const HBITMAP = "intptr_t";
+const HGDIOBJ = "intptr_t";
+
+const GetDC = user32.func("GetDC", HDC, [HWND]);
+const ReleaseDC = user32.func("ReleaseDC", "int", [HWND, HDC]);
+const CreateCompatibleDC = gdi32.func("CreateCompatibleDC", HDC, [HDC]);
+const CreateCompatibleBitmap = gdi32.func("CreateCompatibleBitmap", HBITMAP, [HDC, "int", "int"]);
+const SelectObject = gdi32.func("SelectObject", HGDIOBJ, [HDC, HGDIOBJ]);
+const BitBlt = gdi32.func("BitBlt", BOOL, [HDC, "int", "int", "int", "int", HDC, "int", "int", DWORD]);
+const DeleteObject = gdi32.func("DeleteObject", BOOL, [HGDIOBJ]);
+const DeleteDC = gdi32.func("DeleteDC", BOOL, [HDC]);
+const StretchBlt = gdi32.func("StretchBlt", BOOL, [HDC, "int", "int", "int", "int", HDC, "int", "int", "int", "int", DWORD]);
+const SetStretchBltMode = gdi32.func("SetStretchBltMode", "int", [HDC, "int"]);
+
+const SRCCOPY = 0x00CC0020;
+const HALFTONE = 4;
+
+// GetDIBits with raw buffer for BITMAPINFO (avoid koffi struct issues)
+const GetDIBits = gdi32.func("GetDIBits", "int", [HDC, HBITMAP, UINT, UINT, "void*", "void*", UINT]);
+
+/**
+ * Capture the screen at a reduced resolution and return raw BGRA pixel data.
+ * Much lighter than Electron's desktopCapturer.getSources().
+ */
+export function captureScreen(targetW: number, targetH: number): { data: Buffer; width: number; height: number } | null {
+  try {
+    const screenW = GetSystemMetrics(SM_CXSCREEN);
+    const screenH = GetSystemMetrics(SM_CYSCREEN);
+
+    const hdcScreen = GetDC(0);
+    if (!hdcScreen) return null;
+
+    const hdcMem = CreateCompatibleDC(hdcScreen);
+    const hBitmap = CreateCompatibleBitmap(hdcScreen, targetW, targetH);
+    const hOld = SelectObject(hdcMem, hBitmap);
+
+    SetStretchBltMode(hdcMem, HALFTONE);
+    StretchBlt(hdcMem, 0, 0, targetW, targetH, hdcScreen, 0, 0, screenW, screenH, SRCCOPY);
+
+    // BITMAPINFOHEADER as raw buffer (40 bytes)
+    const bmi = Buffer.alloc(44); // 40 header + 4 padding
+    bmi.writeUInt32LE(40, 0);           // biSize
+    bmi.writeInt32LE(targetW, 4);       // biWidth
+    bmi.writeInt32LE(-targetH, 8);      // biHeight (negative = top-down)
+    bmi.writeUInt16LE(1, 12);           // biPlanes
+    bmi.writeUInt16LE(32, 14);          // biBitCount
+    bmi.writeUInt32LE(0, 16);           // biCompression (BI_RGB)
+    bmi.writeUInt32LE(targetW * targetH * 4, 20); // biSizeImage
+
+    const buf = Buffer.alloc(targetW * targetH * 4);
+    const rows = GetDIBits(hdcScreen, hBitmap, 0, targetH, buf, bmi, 0);
+    if (rows === 0) {
+      console.error("[native] GetDIBits returned 0 rows");
+    }
+
+    // Cleanup
+    SelectObject(hdcMem, hOld);
+    DeleteObject(hBitmap);
+    DeleteDC(hdcMem);
+    ReleaseDC(0, hdcScreen);
+
+    return { data: buf, width: targetW, height: targetH };
+  } catch (e) {
+    console.error("[native] captureScreen error:", e);
+    return null;
   }
 }

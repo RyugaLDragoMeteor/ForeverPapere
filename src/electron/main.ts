@@ -10,8 +10,10 @@ import { generateImage as xaiGenerateImage, generateVideo, generateCharacterVide
 import { closeDb, importMedia, getAllMedia, getDefaultWallpaper, ensureCharacter, linkMediaToCharacter, VIDEOS_DIR, IMAGES_DIR, MEDIA_DIR } from "./media-db";
 import { ChatboxPosition, detectAspectRatio, computeChatboxBounds, createTrayIconBuffer, getSpriteAlign, CHATBOX_WIDTH, CHATBOX_HEIGHT } from "./utils";
 
+let _nativeCache: typeof import("./wallpaper-native") | null = null;
 function getNative(): typeof import("./wallpaper-native") {
-  return require("./wallpaper-native");
+  if (!_nativeCache) _nativeCache = require("./wallpaper-native");
+  return _nativeCache;
 }
 
 // ── Config helpers (shared config.json in %APPDATA%) ─────
@@ -227,7 +229,7 @@ const MASCOT_MARGIN = 10;
 
 function getMascotBounds(expanded: boolean) {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
-  const w = expanded ? MASCOT_CHAT_WIDTH + 12 : MASCOT_SPRITE_SIZE + 12;
+  const w = MASCOT_CHAT_WIDTH + 12; // always full width so x doesn't shift
   const h = expanded ? MASCOT_EXPANDED_HEIGHT : MASCOT_COLLAPSED_HEIGHT;
   return {
     x: screenW - w - MASCOT_MARGIN,
@@ -350,10 +352,28 @@ ipcMain.on("mascot-get-config", (event) => {
   };
 });
 
+let mascotAnimTimer: ReturnType<typeof setTimeout> | null = null;
+
 ipcMain.on("mascot-toggle-chat", (_e, open: boolean) => {
   if (!mascotWindow || mascotWindow.isDestroyed()) return;
-  const bounds = getMascotBounds(open);
-  mascotWindow.setBounds(bounds);
+  if (mascotAnimTimer) { clearTimeout(mascotAnimTimer); mascotAnimTimer = null; }
+
+  const to = getMascotBounds(open);
+  const from = mascotWindow.getBounds();
+  const steps = 5;
+  let step = 0;
+
+  function tick() {
+    step++;
+    const t = 1 - Math.pow(1 - step / steps, 2); // ease-out quad
+    const y = Math.round(from.y + (to.y - from.y) * t);
+    const h = Math.round(from.height + (to.height - from.height) * t);
+    if (mascotWindow && !mascotWindow.isDestroyed()) {
+      mascotWindow.setBounds({ x: to.x, y, width: to.width, height: h });
+    }
+    if (step < steps) mascotAnimTimer = setTimeout(tick, 30);
+  }
+  tick();
 });
 
 ipcMain.on("mascot-send-chat", (_e, message: string) => {
@@ -1031,7 +1051,7 @@ let hmapFrameCount = 0;
 const HMAP_SPAWN_INTERVAL = 10; // spawn a new chatbox every ~10 seconds (10 frames at 1fps)
 
 let hmapChatboxId = 0;
-const hmapSpawnedBoxes: { id: number; row: number; col: number; win: BrowserWindow }[] = [];
+const hmapSpawnedBoxes: { id: number; row: number; col: number; win: BrowserWindow; opacity: number }[] = [];
 
 function spawnChatboxWindow(x: number, y: number, text: string, row: number, col: number) {
   hmapChatboxId++;
@@ -1056,7 +1076,7 @@ function spawnChatboxWindow(x: number, y: number, text: string, row: number, col
   });
 
   win.loadFile(path.join(__dirname, "..", "..", "chatbox-bubble.html"));
-  win.once("ready-to-show", () => win.showInactive());
+  win.webContents.once("did-finish-load", () => win.showInactive());
 
   // When this bubble wants to close itself
   win.webContents.on("ipc-message", (_e, channel) => {
@@ -1086,7 +1106,7 @@ function spawnChatboxWindow(x: number, y: number, text: string, row: number, col
     if (idx >= 0) hmapSpawnedBoxes.splice(idx, 1);
   });
 
-  hmapSpawnedBoxes.push({ id, row, col, win });
+  hmapSpawnedBoxes.push({ id, row, col, win, opacity: 1.0 });
   console.log(`[heatmap] Spawned bubble #${id} at (${x},${y})`);
 }
 
@@ -1097,26 +1117,15 @@ async function hmapTick() {
   if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
   hmapBusy = true;
   try {
-    const sources = await desktopCapturer.getSources({
-      types: ["screen"],
-      thumbnailSize: { width: 320, height: 180 },
-    });
+    const capture = getNative().captureScreen(320, 180);
+    if (!capture) return;
 
-    if (sources.length === 0) return;
-
-    const thumb = sources[0].thumbnail;
-    const w = thumb.getSize().width;
-    const h = thumb.getSize().height;
-    const frame = new Uint8Array(thumb.toBitmap());
+    const w = capture.width;
+    const h = capture.height;
+    const frame = new Uint8Array(capture.data);
 
     if (!hmapPrevFrame) {
       hmapPrevFrame = frame;
-      // Save first capture so we can see what the heatmap sees
-      try {
-        const debugJpg = thumb.toJPEG(90);
-        fs.writeFileSync(path.join(MEDIA_DIR, "..", "heatmap-debug.jpg"), debugJpg);
-        console.log("[heatmap] Debug frame saved to heatmap-debug.jpg");
-      } catch (_) {}
       return;
     }
 
@@ -1185,8 +1194,10 @@ async function hmapTick() {
         }
       }
       const avgLocal = localMotion / (HMAP_BLOCK_W * HMAP_BLOCK_H);
-      const opacity = avgLocal > 15 ? 0.1 : avgLocal > 8 ? 0.3 : avgLocal > 4 ? 0.6 : 1.0;
-      box.win.setOpacity(opacity);
+      const target = avgLocal > 15 ? 0.1 : avgLocal > 8 ? 0.3 : avgLocal > 4 ? 0.6 : 1.0;
+      const lerp = 0.15; // smooth toward target each frame
+      box.opacity += (target - box.opacity) * lerp;
+      box.win.setOpacity(Math.round(box.opacity * 20) / 20); // snap to 5% steps to reduce flicker
     }
 
     // Only try to spawn a new chatbox periodically
@@ -1254,7 +1265,17 @@ async function hmapTick() {
     }
 
     if (bestRow < 0) return; // no valid unoccupied spot
-    if (hmapSpawnedBoxes.length >= 10) return; // cap at 10 bubbles
+    if (hmapSpawnedBoxes.length >= 10) {
+      // Remove oldest bubble to make room
+      const oldest = hmapSpawnedBoxes.shift()!;
+      for (let br = 0; br < HMAP_BLOCK_H; br++) {
+        for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+          hmapOccupied.delete(`${oldest.row + br},${oldest.col + bc}`);
+        }
+      }
+      if (!oldest.win.isDestroyed()) oldest.win.close();
+      console.log(`[heatmap] Recycled oldest bubble #${oldest.id}`);
+    }
 
     // Spawn new chatbox
     const workArea = screen.getPrimaryDisplay().workAreaSize;
