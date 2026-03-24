@@ -1028,7 +1028,7 @@ const HEATMAP_CAPTURE_H = 90;
 const HEATMAP_INTERVAL_MS = 250; // 4fps
 const CHATBOX_BLOCK_W = 3; // ~300px wide = ~2.5 cells, round up to 3
 const CHATBOX_BLOCK_H = 1; // ~60px tall = ~0.5 cell, round up to 1
-const MIN_MOVE_INTERVAL_MS = 5000; // don't move more often than every 5s
+const MIN_MOVE_INTERVAL_MS = 3000; // don't move more often than every 3s
 
 let heatmapFrameCount = 0;
 async function captureForHeatmap() {

@@ -7,7 +7,7 @@ const GRID_CELLS = GRID_COLS * GRID_ROWS; // 144
 const MAX_FRAMES = 20; // 5-second window at 4fps
 const SCENE_CHANGE_THRESHOLD = 0.85; // 85% of cells changed = full screen swap
 const CELL_CHANGE_THRESHOLD = 15; // avg pixel diff to count a cell as "changed"
-const REPOSITION_HYSTERESIS = 0.4; // new spot must be 40% calmer to trigger move
+const REPOSITION_HYSTERESIS = 0.7; // new spot must be 70% calmer to trigger move (very sticky)
 
 export interface HeatmapState {
   grid: Float32Array;           // accumulated activity per cell
