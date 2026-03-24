@@ -1012,9 +1012,28 @@ async function captureAndComment() {
       scheduleNextComment();
       return;
     }
-    if (comment && mascotWindow && !mascotWindow.isDestroyed()) {
+    if (comment) {
       scLog(`[screen-comment] AI says: ${comment}`);
-      mascotWindow.webContents.send("mascot-screen-comment", comment);
+      // Show in mascot chat
+      if (mascotWindow && !mascotWindow.isDestroyed()) {
+        mascotWindow.webContents.send("mascot-screen-comment", comment);
+      }
+      // Also show in a chatbox bubble — pick one with "A new thought..." or spawn fresh
+      const thoughtBubble = hmapSpawnedBoxes.find(b => !b.win.isDestroyed() && b.hasThought);
+      if (thoughtBubble) {
+        thoughtBubble.win.webContents.executeJavaScript(
+          `document.querySelector(".bubble-text").textContent = ${JSON.stringify(comment)};`
+        ).catch(() => {});
+        thoughtBubble.hasThought = false; // mark as used
+      } else if (hmapSpawnedBoxes.length > 0) {
+        // Use the newest bubble
+        const newest = hmapSpawnedBoxes[hmapSpawnedBoxes.length - 1];
+        if (!newest.win.isDestroyed()) {
+          newest.win.webContents.executeJavaScript(
+            `document.querySelector(".bubble-text").textContent = ${JSON.stringify(comment)};`
+          ).catch(() => {});
+        }
+      }
     } else {
       scLog(`[screen-comment] No comment or mascot gone. comment=${!!comment}`);
     }
@@ -1059,7 +1078,7 @@ let hmapFrameCount = 0;
 const HMAP_SPAWN_INTERVAL = 10; // spawn a new chatbox every ~10 seconds (10 frames at 1fps)
 
 let hmapChatboxId = 0;
-const hmapSpawnedBoxes: { id: number; row: number; col: number; win: BrowserWindow; opacity: number }[] = [];
+const hmapSpawnedBoxes: { id: number; row: number; col: number; win: BrowserWindow; opacity: number; hasThought: boolean }[] = [];
 
 function spawnChatboxWindow(x: number, y: number, text: string, row: number, col: number) {
   hmapChatboxId++;
@@ -1114,7 +1133,7 @@ function spawnChatboxWindow(x: number, y: number, text: string, row: number, col
     if (idx >= 0) hmapSpawnedBoxes.splice(idx, 1);
   });
 
-  hmapSpawnedBoxes.push({ id, row, col, win, opacity: 1.0 });
+  hmapSpawnedBoxes.push({ id, row, col, win, opacity: 1.0, hasThought: true });
   console.log(`[heatmap] Spawned bubble #${id} at (${x},${y})`);
 }
 
