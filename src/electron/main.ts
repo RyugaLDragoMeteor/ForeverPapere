@@ -715,6 +715,15 @@ function rebuildTrayMenu() {
     },
     { type: "separator" },
     {
+      label: "Pause Screen Capture",
+      type: "checkbox",
+      checked: false,
+      click: (item) => {
+        hmapPaused = item.checked;
+        console.log(`[heatmap] ${hmapPaused ? "Paused" : "Resumed"}`);
+      },
+    },
+    {
       label: "Clear All Chatboxes",
       click: () => {
         if (frontpaperWindow && !frontpaperWindow.isDestroyed()) {
@@ -1006,8 +1015,8 @@ function startScreenCommentary() {
 const HMAP_COLS = 42;
 const HMAP_ROWS = 24;
 const HMAP_CELLS = HMAP_COLS * HMAP_ROWS;
-const HMAP_INTERVAL = 333; // 3fps
-const HMAP_DECAY = 0.88; // exponential decay per frame (~2.4s half-life at 3fps)
+const HMAP_INTERVAL = 1000; // 1fps — minimal CPU impact
+const HMAP_DECAY = 0.75; // exponential decay per frame (~2.4s half-life at 1fps)
 const HMAP_BLOCK_W = 7; // chatbox ~300px ≈ 7 cells wide at 42-col grid
 const HMAP_BLOCK_H = 1; // chatbox ~40px ≈ 1 cell tall at 24-row grid
 const HMAP_JITTER = 3.0; // only move if current spot is 3x worse than best
@@ -1019,7 +1028,7 @@ let hmapOccupied: Set<string> = new Set();         // "row,col" keys of occupied
 let hmapTimer: ReturnType<typeof setInterval> | null = null;
 let hmapSkipFrames = 0;
 let hmapFrameCount = 0;
-const HMAP_SPAWN_INTERVAL = 30; // spawn a new chatbox every ~10 seconds (30 frames at 3fps)
+const HMAP_SPAWN_INTERVAL = 10; // spawn a new chatbox every ~10 seconds (10 frames at 1fps)
 
 let hmapChatboxId = 0;
 const hmapSpawnedBoxes: { id: number; row: number; col: number; win: BrowserWindow }[] = [];
@@ -1082,14 +1091,15 @@ function spawnChatboxWindow(x: number, y: number, text: string, row: number, col
 }
 
 let hmapBusy = false;
+let hmapPaused = false;
 async function hmapTick() {
-  if (hmapBusy) return; // skip if previous capture still processing
+  if (hmapBusy || hmapPaused) return;
   if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
   hmapBusy = true;
   try {
     const sources = await desktopCapturer.getSources({
       types: ["screen"],
-      thumbnailSize: { width: 640, height: 360 },
+      thumbnailSize: { width: 320, height: 180 },
     });
 
     if (sources.length === 0) return;
