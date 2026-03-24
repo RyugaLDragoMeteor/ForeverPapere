@@ -69,12 +69,13 @@ function createFrontpaperWindow() {
     hasShadow: false,
     show: false,
     webPreferences: {
+      preload: path.join(__dirname, "frontpaper-preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
     },
   });
 
-  frontpaperWindow.setIgnoreMouseEvents(true);
+  frontpaperWindow.setIgnoreMouseEvents(true, { forward: true });
   frontpaperWindow.loadFile(path.join(__dirname, "..", "..", "frontpaper.html"));
 
   frontpaperWindow.webContents.on("console-message", (_e, _level, message) => {
@@ -357,6 +358,39 @@ ipcMain.on("mascot-toggle-chat", (_e, open: boolean) => {
 
 ipcMain.on("mascot-send-chat", (_e, message: string) => {
   handleMascotChat(message);
+});
+
+// Frontpaper mouse toggle — renderer tells us when cursor is over a chatbox
+ipcMain.on("frontpaper-hover", (_e, overChatbox: boolean) => {
+  if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
+  if (overChatbox) {
+    frontpaperWindow.setIgnoreMouseEvents(false);
+  } else {
+    frontpaperWindow.setIgnoreMouseEvents(true, { forward: true });
+  }
+});
+
+ipcMain.on("frontpaper-remove-chatbox", (_e, id: string) => {
+  const idx = hmapSpawnedBoxes.findIndex(b => `calm-cb-${b.id}` === id);
+  if (idx >= 0) {
+    const box = hmapSpawnedBoxes[idx];
+    for (let br = 0; br < HMAP_BLOCK_H; br++) {
+      for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+        hmapOccupied.delete(`${box.row + br},${box.col + bc}`);
+      }
+    }
+    hmapSpawnedBoxes.splice(idx, 1);
+  }
+  if (frontpaperWindow && !frontpaperWindow.isDestroyed()) {
+    frontpaperWindow.webContents.executeJavaScript(
+      `document.getElementById('${id}')?.remove()`
+    ).catch(() => {});
+  }
+  // Re-enable pass-through
+  if (frontpaperWindow && !frontpaperWindow.isDestroyed()) {
+    frontpaperWindow.setIgnoreMouseEvents(true, { forward: true });
+  }
+  console.log(`[heatmap] Removed chatbox ${id}`);
 });
 
 ipcMain.on("chatbox-dismiss", () => {
@@ -712,6 +746,19 @@ function rebuildTrayMenu() {
       click: () => openXaiKeyDialog(),
     },
     { type: "separator" },
+    {
+      label: "Clear All Chatboxes",
+      click: () => {
+        if (frontpaperWindow && !frontpaperWindow.isDestroyed()) {
+          frontpaperWindow.webContents.executeJavaScript(
+            `document.querySelectorAll('.calm-chatbox').forEach(b => b.remove())`
+          ).catch(() => {});
+        }
+        hmapSpawnedBoxes.length = 0;
+        hmapOccupied.clear();
+        console.log("[heatmap] Cleared all chatboxes");
+      },
+    },
     {
       label: "Quit (Ctrl+Alt+Q)",
       click: () => { cleanup(); app.quit(); },
@@ -1302,6 +1349,7 @@ app.on("ready", () => {
   startAutoGeneration();
   startScreenCommentary();
   startHeatmap();
+
 });
 
 // Handle external kill (taskkill, SIGTERM, etc.)

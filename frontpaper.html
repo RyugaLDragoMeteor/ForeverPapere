@@ -30,8 +30,9 @@
       font-family: 'Segoe UI', sans-serif;
       font-size: 13px;
       line-height: 1.5;
-      pointer-events: none;
+      pointer-events: auto;
       transition: opacity 2s ease;
+      cursor: default;
     }
   </style>
 </head>
@@ -39,5 +40,33 @@
   <div id="overlay">
     <!-- Chatboxes spawned dynamically by heatmap -->
   </div>
+  <script>
+    let isOverChatbox = false;
+
+    // Throttled hover detection — only sends IPC when state changes
+    document.addEventListener("mousemove", (e) => {
+      const over = !!e.target?.closest?.(".calm-chatbox");
+      if (over !== isOverChatbox) {
+        isOverChatbox = over;
+        window.frontpaperAPI?.setHover(over);
+      }
+    });
+
+    // Middle click removes the chatbox
+    document.addEventListener("mousedown", (e) => {
+      if (e.button === 1) {
+        const box = e.target?.closest?.(".calm-chatbox");
+        if (box?.id) {
+          e.preventDefault();
+          window.frontpaperAPI?.removeChatbox(box.id);
+        }
+      }
+    });
+
+    // Prevent middle-click paste/scroll on chatboxes
+    document.addEventListener("auxclick", (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+  </script>
 </body>
 </html>

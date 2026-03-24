@@ -7,7 +7,7 @@
   "license": "MIT",
   "scripts": {
     "build:web": "esbuild src/main.ts --bundle --outfile=dist/main.js && esbuild src/chatbox.ts --bundle --outfile=dist/chatbox.js",
-    "build:electron": "esbuild src/electron/main.ts src/electron/preload.ts src/electron/chatbox-preload.ts src/electron/mascot-preload.ts --bundle --platform=node --external:electron --external:koffi --external:./wallpaper-native --outdir=dist/electron && esbuild src/electron/wallpaper-native.ts --bundle --platform=node --external:koffi --outfile=dist/electron/wallpaper-native.js",
+    "build:electron": "esbuild src/electron/main.ts src/electron/preload.ts src/electron/chatbox-preload.ts src/electron/mascot-preload.ts src/electron/frontpaper-preload.ts --bundle --platform=node --external:electron --external:koffi --external:./wallpaper-native --outdir=dist/electron && esbuild src/electron/wallpaper-native.ts --bundle --platform=node --external:koffi --outfile=dist/electron/wallpaper-native.js",
     "build": "npm run build:web && npm run build:electron",
     "start": "npm run build && electron .",
     "stop": "node -e \"try{require('child_process').execSync('taskkill /f /im electron.exe')}catch(e){}\"",

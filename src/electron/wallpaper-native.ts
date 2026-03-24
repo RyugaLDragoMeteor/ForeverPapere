@@ -318,3 +318,38 @@ export function reset(): boolean {
   cachedProgman = 0;
   return true;
 }
+
+// ── Middle-click detection via polling (no hook overhead) ────
+const VK_MBUTTON = 0x04;
+const GetAsyncKeyState = user32.func("GetAsyncKeyState", "short", ["int"]);
+
+const POINT_STRUCT = koffi.struct("CURSORPOINT", { x: "long", y: "long" });
+const GetCursorPos = user32.func("GetCursorPos", BOOL, [koffi.inout(POINT_STRUCT)]);
+
+let mclickTimer: ReturnType<typeof setInterval> | null = null;
+let mclickWasDown = false;
+
+export function startMiddleClickHook(cb: (x: number, y: number) => void): boolean {
+  if (mclickTimer) return true;
+  mclickTimer = setInterval(() => {
+    const state = GetAsyncKeyState(VK_MBUTTON);
+    const isDown = (state & 0x8000) !== 0;
+    if (isDown && !mclickWasDown) {
+      // Middle button just pressed — get cursor position
+      const pt = { x: 0, y: 0 };
+      GetCursorPos(pt);
+      cb(pt.x, pt.y);
+    }
+    mclickWasDown = isDown;
+  }, 50); // poll every 50ms — responsive enough, negligible overhead
+  console.log("[native] Middle-click poll started");
+  return true;
+}
+
+export function stopMiddleClickHook(): void {
+  if (mclickTimer) {
+    clearInterval(mclickTimer);
+    mclickTimer = null;
+    console.log("[native] Middle-click poll stopped");
+  }
+}
