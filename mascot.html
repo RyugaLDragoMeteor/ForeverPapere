@@ -9,6 +9,7 @@
       background: transparent;
       overflow: hidden;
       font-family: 'Segoe UI', sans-serif;
+      height: 100%;
     }
 
     #container {
@@ -20,17 +21,17 @@
       padding: 4px;
     }
 
-    /* Chat area — hidden initially, layout ready */
+    /* Chat area — hidden initially, appears above sprite */
     #chat {
       display: none;
       flex-direction: column;
       width: 320px;
       gap: 6px;
-      margin-bottom: 4px;
+      margin-top: 4px;
     }
     #chat.open { display: flex; }
 
-    /* Character sprite */
+    /* Character sprite — anchored at bottom */
     #sprite {
       width: 120px;
       height: 120px;
@@ -40,7 +41,7 @@
     }
     #sprite:hover { transform: scale(1.05); }
 
-    /* Chat boxes — start invisible, animated in by anime.js */
+    /* Chat boxes — start invisible, animated in by Motion */
     #messageBox, #inputBox {
       transform: scale(0);
       opacity: 0;
@@ -125,6 +126,7 @@
 </head>
 <body>
   <div id="container">
+    <img id="sprite" />
     <div id="chat">
       <div id="messageBox">
         <div class="msg-entry">
@@ -138,10 +140,9 @@
         <button id="sendBtn">Send</button>
       </div>
     </div>
-    <img id="sprite" />
   </div>
 
-  <script src="./node_modules/animejs/lib/anime.min.js"></script>
+  <script src="./node_modules/motion/dist/motion.js"></script>
   <script>
     const config = window.mascotAPI.getConfig();
     console.log("[mascot] Config:", JSON.stringify(config));
@@ -165,66 +166,34 @@
       sprite.onerror = (e) => console.error("[mascot] Sprite load FAILED:", e);
     }
 
-    function openChat() {
+    const { animate } = Motion;
+
+    async function openChat() {
       if (animating) return;
       animating = true;
       chatOpen = true;
+      // Sprite slides up
+      animate(sprite, { y: [0, -10] }, { duration: 0.2, easing: "ease-out" });
+      // Chat appears below
       chat.classList.add("open");
-      window.mascotAPI.toggleChat(true);
-
-      // Bubble in: messageBox first, then inputBox
-      anime({
-        targets: messageBox,
-        scale: [0, 1],
-        opacity: [0, 1],
-        duration: 300,
-        easing: "easeOutBack",
-        complete: () => {
-          anime({
-            targets: inputBox,
-            scale: [0, 1],
-            opacity: [0, 1],
-            duration: 250,
-            easing: "easeOutBack",
-            complete: () => {
-              animating = false;
-              inputField.focus();
-            }
-          });
-        }
-      });
+      await animate(messageBox, { scale: [0, 1], opacity: [0, 1] }, { duration: 0.25, easing: [0.34, 1.56, 0.64, 1] }).finished;
+      await animate(inputBox, { scale: [0, 1], opacity: [0, 1] }, { duration: 0.2, easing: [0.34, 1.56, 0.64, 1] }).finished;
+      animating = false;
+      inputField.focus();
     }
 
-    function closeChat() {
+    async function closeChat() {
       if (animating) return;
       animating = true;
       chatOpen = false;
-      window.mascotAPI.toggleChat(false);
-
-      // Bubble out: inputBox first, then messageBox
-      anime({
-        targets: inputBox,
-        scale: [1, 0],
-        opacity: [1, 0],
-        duration: 200,
-        easing: "easeInBack",
-        complete: () => {
-          anime({
-            targets: messageBox,
-            scale: [1, 0],
-            opacity: [1, 0],
-            duration: 200,
-            easing: "easeInBack",
-            complete: () => {
-              chat.classList.remove("open");
-              animating = false;
-            }
-          });
-        }
-      });
+      await animate(inputBox, { scale: [1, 0], opacity: [1, 0] }, { duration: 0.15, easing: [0.36, 0, 0.66, -0.56] }).finished;
+      await animate(messageBox, { scale: [1, 0], opacity: [1, 0] }, { duration: 0.15, easing: [0.36, 0, 0.66, -0.56] }).finished;
+      chat.classList.remove("open");
+      // Sprite slides back down
+      await animate(sprite, { y: [-10, 0] }, { duration: 0.2, easing: "ease-out" }).finished;
+      animating = false;
     }
 
-    // Click sprite to toggle chat
     sprite.addEventListener("click", () => {
       if (chatOpen) closeChat();
       else openChat();

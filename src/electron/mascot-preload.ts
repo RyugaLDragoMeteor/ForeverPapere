@@ -15,4 +15,7 @@ contextBridge.exposeInMainWorld("mascotAPI", {
   onScreenComment: (cb: (text: string) => void) => {
     ipcRenderer.on("mascot-screen-comment", (_e, text) => cb(text));
   },
+  onSlideDone: (cb: (open: boolean) => void) => {
+    ipcRenderer.on("mascot-slide-done", (_e, open) => cb(open));
+  },
 });

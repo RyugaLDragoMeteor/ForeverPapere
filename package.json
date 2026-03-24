@@ -18,8 +18,8 @@
     "test:unit": "vitest run tests/unit"
   },
   "dependencies": {
-    "animejs": "^3.2.2",
-    "koffi": "^2.9.0"
+    "koffi": "^2.9.0",
+    "motion": "^12.38.0"
   },
   "devDependencies": {
     "electron": "^33.4.11",

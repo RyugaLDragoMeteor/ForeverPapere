@@ -225,12 +225,12 @@ const MASCOT_SPRITE_SIZE = 120;
 const MASCOT_CHAT_WIDTH = 320;
 const MASCOT_COLLAPSED_HEIGHT = MASCOT_SPRITE_SIZE + 12;
 const MASCOT_EXPANDED_HEIGHT = MASCOT_SPRITE_SIZE + 200;
-const MASCOT_MARGIN = 10;
+const MASCOT_MARGIN = 0;
 
-function getMascotBounds(expanded: boolean) {
+function getMascotBounds() {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
-  const w = MASCOT_CHAT_WIDTH + 12; // always full width so x doesn't shift
-  const h = expanded ? MASCOT_EXPANDED_HEIGHT : MASCOT_COLLAPSED_HEIGHT;
+  const w = MASCOT_CHAT_WIDTH + 12;
+  const h = MASCOT_EXPANDED_HEIGHT;
   return {
     x: screenW - w - MASCOT_MARGIN,
     y: screenH - h - MASCOT_MARGIN,
@@ -242,7 +242,7 @@ function getMascotBounds(expanded: boolean) {
 function createMascotWindow() {
   if (mascotWindow && !mascotWindow.isDestroyed()) return;
 
-  const bounds = getMascotBounds(false);
+  const bounds = getMascotBounds();
   mascotWindow = new BrowserWindow({
     ...bounds,
     frame: false,
@@ -352,28 +352,8 @@ ipcMain.on("mascot-get-config", (event) => {
   };
 });
 
-let mascotAnimTimer: ReturnType<typeof setTimeout> | null = null;
-
-ipcMain.on("mascot-toggle-chat", (_e, open: boolean) => {
-  if (!mascotWindow || mascotWindow.isDestroyed()) return;
-  if (mascotAnimTimer) { clearTimeout(mascotAnimTimer); mascotAnimTimer = null; }
-
-  const to = getMascotBounds(open);
-  const from = mascotWindow.getBounds();
-  const steps = 5;
-  let step = 0;
-
-  function tick() {
-    step++;
-    const t = 1 - Math.pow(1 - step / steps, 2); // ease-out quad
-    const y = Math.round(from.y + (to.y - from.y) * t);
-    const h = Math.round(from.height + (to.height - from.height) * t);
-    if (mascotWindow && !mascotWindow.isDestroyed()) {
-      mascotWindow.setBounds({ x: to.x, y, width: to.width, height: h });
-    }
-    if (step < steps) mascotAnimTimer = setTimeout(tick, 30);
-  }
-  tick();
+ipcMain.on("mascot-toggle-chat", () => {
+  // Window is always full size; chat visibility is handled in the renderer
 });
 
 ipcMain.on("mascot-send-chat", (_e, message: string) => {
