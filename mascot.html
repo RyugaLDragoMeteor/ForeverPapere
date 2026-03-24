@@ -7,31 +7,26 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       background: transparent;
-      overflow: hidden;
       font-family: 'Segoe UI', sans-serif;
+      width: 100%;
       height: 100%;
+      overflow: hidden;
     }
 
     #container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
       display: flex;
       flex-direction: column;
       align-items: flex-end;
       justify-content: flex-end;
-      height: 100%;
-      padding: 4px;
+      padding-bottom: 4px;
     }
 
-    /* Chat area — hidden initially, appears above sprite */
-    #chat {
-      display: none;
-      flex-direction: column;
-      width: 320px;
-      gap: 6px;
-      margin-top: 4px;
-    }
-    #chat.open { display: flex; }
-
-    /* Character sprite — anchored at bottom */
+    /* Character sprite */
     #sprite {
       width: 120px;
       height: 120px;
@@ -41,14 +36,27 @@
     }
     #sprite:hover { transform: scale(1.05); }
 
+    /* Chat area — hidden initially, appears below sprite */
+    #chat {
+      display: none;
+      flex-direction: column;
+      width: 320px;
+      gap: 6px;
+      margin-top: 4px;
+      flex-shrink: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #chat.open { display: flex; }
+
     /* Chat boxes — start invisible, animated in by Motion */
     #messageBox, #inputBox {
       transform: scale(0);
       opacity: 0;
-      transform-origin: bottom right;
+      transform-origin: top right;
     }
 
-    /* Top box: scrollable chat history */
+    /* Chat history — newest on top */
     #messageBox {
       background: rgba(20, 20, 45, 0.92);
       border: 1px solid rgba(99, 102, 241, 0.4);
@@ -57,14 +65,14 @@
       color: #e0e0ff;
       font-size: 13px;
       line-height: 1.5;
-      min-height: 50px;
       max-height: 200px;
       overflow-y: auto;
       word-wrap: break-word;
       display: flex;
-      flex-direction: column;
+      flex-direction: column-reverse;
       gap: 8px;
     }
+    #messageBox:empty { display: none !important; }
     #messageBox::-webkit-scrollbar { width: 4px; }
     #messageBox::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.4); border-radius: 2px; }
     #messageBox::-webkit-scrollbar-track { background: transparent; }
@@ -78,7 +86,7 @@
     .msg-entry .sender.system { color: #ff8b8b; }
     .msg-entry .text { word-wrap: break-word; }
 
-    /* Bottom box: input / waiting indicator */
+    /* Input box — always visible when chat is open */
     #inputBox {
       display: flex;
       gap: 6px;
@@ -87,6 +95,7 @@
       border-radius: 12px;
       padding: 8px 10px;
       align-items: center;
+      position: relative;
     }
     #inputField {
       flex: 1;
@@ -97,19 +106,6 @@
       outline: none;
     }
     #inputField::placeholder { color: #6b6b9e; }
-    #waitingDots {
-      display: none;
-      flex: 1;
-      color: #8888bb;
-      font-size: 16px;
-      font-style: italic;
-      letter-spacing: 3px;
-      animation: pulse 1.2s infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 0.4; }
-      50% { opacity: 1; }
-    }
     #sendBtn {
       background: #6366f1;
       border: none;
@@ -122,21 +118,46 @@
     }
     #sendBtn:hover { background: #5558e6; }
     #sendBtn:disabled { opacity: 0.5; cursor: default; }
+
+    /* Waiting dots — overlay on top of input field */
+    #waitingDots {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      position: absolute;
+      left: 10px;
+      right: 50px;
+      top: 0;
+      bottom: 0;
+      pointer-events: none;
+      opacity: 0.5;
+    }
+    #waitingDots.visible { display: inline-flex; }
+    .wave-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #8888bb;
+      animation: wave 1s ease-in-out infinite;
+    }
+    .wave-dot:nth-child(2) { animation-delay: 0.15s; }
+    .wave-dot:nth-child(3) { animation-delay: 0.3s; }
+    @keyframes wave {
+      0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+      30% { transform: translateY(-6px); opacity: 1; }
+    }
   </style>
 </head>
 <body>
   <div id="container">
     <img id="sprite" />
     <div id="chat">
-      <div id="messageBox">
-        <div class="msg-entry">
-          <div class="sender char" id="msgSender"></div>
-          <div class="text" id="msgText">Click me to chat!</div>
-        </div>
-      </div>
+      <div id="messageBox"></div>
       <div id="inputBox">
         <input id="inputField" type="text" placeholder="Type a message..." />
-        <span id="waitingDots">...</span>
+        <span id="waitingDots"><span class="wave-dot"></span><span class="wave-dot"></span><span class="wave-dot"></span></span>
         <button id="sendBtn">Send</button>
       </div>
     </div>
@@ -199,28 +220,40 @@
       else openChat();
     });
 
-    const msgSender = document.getElementById("msgSender");
-    const msgText = document.getElementById("msgText");
+    const waitingDots2 = document.getElementById("waitingDots");
 
-    function showMessage(sender, text, type) {
-      msgSender.textContent = sender;
-      msgSender.className = "sender " + type;
-      msgText.textContent = text;
-      messageBox.scrollTop = 0;
+    function addMessage(sender, text, type) {
+      const entry = document.createElement("div");
+      entry.className = "msg-entry";
+      entry.innerHTML = `<div class="sender ${type}">${sender}</div><div class="text"></div>`;
+      entry.querySelector(".text").textContent = text;
+      messageBox.prepend(entry);
+      return entry;
     }
+
+    let lastUserEntry = null;
 
     function setWaiting(on) {
       waiting = on;
-      inputField.style.display = on ? "none" : "block";
-      waitingDots.style.display = on ? "block" : "none";
-      sendBtn.style.display = on ? "none" : "block";
+      if (on) {
+        waitingDots2.classList.add("visible");
+      } else {
+        waitingDots2.classList.remove("visible");
+        lastUserEntry = null;
+      }
     }
 
     function sendMessage() {
       const text = inputField.value.trim();
-      if (!text || waiting) return;
+      if (!text) return;
 
-      showMessage("You", text, "you");
+      // If resending while waiting, replace the previous user message in UI
+      if (waiting && lastUserEntry) {
+        lastUserEntry.querySelector(".text").textContent = text;
+      } else {
+        lastUserEntry = addMessage("You", text, "you");
+      }
+
       inputField.value = "";
       setWaiting(true);
       window.mascotAPI.sendChat(text);
@@ -233,20 +266,22 @@
 
     // AI response
     window.mascotAPI.onResponse((response) => {
-      showMessage(config.characterName || "Character", response, "char");
+      console.log("[mascot-chat] Got response:", response.slice(0, 80));
+      addMessage(config.characterName || "Character", response, "char");
       setWaiting(false);
       inputField.focus();
     });
 
     window.mascotAPI.onError((error) => {
-      showMessage("Error", error, "system");
+      console.log("[mascot-chat] Got error:", error);
+      addMessage("Error", error, "system");
       setWaiting(false);
       inputField.focus();
     });
 
     // Unsolicited screen commentary from AI
     window.mascotAPI.onScreenComment((comment) => {
-      showMessage(config.characterName || "Character", comment, "char");
+      addMessage(config.characterName || "Character", comment, "char");
       if (!chatOpen) openChat();
     });
   </script>

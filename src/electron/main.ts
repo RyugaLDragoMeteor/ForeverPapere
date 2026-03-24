@@ -224,7 +224,7 @@ let mascotChatHistory: { role: string; content: string }[] = [];
 const MASCOT_SPRITE_SIZE = 120;
 const MASCOT_CHAT_WIDTH = 320;
 const MASCOT_COLLAPSED_HEIGHT = MASCOT_SPRITE_SIZE + 12;
-const MASCOT_EXPANDED_HEIGHT = MASCOT_SPRITE_SIZE + 200;
+const MASCOT_EXPANDED_HEIGHT = MASCOT_SPRITE_SIZE + 280;
 const MASCOT_MARGIN = 0;
 
 function getMascotBounds() {
@@ -263,6 +263,9 @@ function createMascotWindow() {
   mascotWindow.loadFile(path.join(__dirname, "..", "..", "mascot.html"));
   mascotWindow.webContents.on("console-message", (_e, _level, message) => {
     console.log("[mascot-renderer]", message);
+    if (message.startsWith("[mascot-chat]")) {
+      chatLog(`[renderer] ${message}`);
+    }
   });
   mascotWindow.once("ready-to-show", () => {
     mascotWindow?.show();
@@ -272,20 +275,37 @@ function createMascotWindow() {
 }
 
 // Chat with OpenRouter
+let mascotChatGenId = 0;
+const CHAT_LOG = path.join(MEDIA_DIR, "..", "chat.log");
+
+function chatLog(msg: string) {
+  const line = `${new Date().toISOString()} ${msg}\n`;
+  try { fs.appendFileSync(CHAT_LOG, line); } catch (_) {}
+  console.log(msg);
+}
+
+let mascotAbortController: AbortController | null = null;
+
 async function handleMascotChat(userMessage: string) {
+  const genId = ++mascotChatGenId;
+
+  // Abort any in-flight request
+  if (mascotAbortController) {
+    mascotAbortController.abort();
+    mascotAbortController = null;
+  }
+
   if (!mascotWindow || mascotWindow.isDestroyed()) return;
   if (!hasOpenRouterKey()) {
     mascotWindow.webContents.send("mascot-chat-error", "No OpenRouter key set. Add one in tray settings.");
     return;
   }
 
-  // Get character info
   const firstImage = getAllMedia("image", "uploaded")[0];
   const charName = firstImage?.character_id
     ? (getAllMedia().find(m => m.character_id === firstImage.character_id) ? "Character" : "Character")
     : "Character";
 
-  // Build system prompt
   if (mascotChatHistory.length === 0) {
     mascotChatHistory.push({
       role: "system",
@@ -293,22 +313,23 @@ async function handleMascotChat(userMessage: string) {
     });
   }
 
-  mascotChatHistory.push({ role: "user", content: userMessage });
+  // Replace last user message if resending (keep history intact, just swap the message)
+  if (mascotChatHistory.length > 0 && mascotChatHistory[mascotChatHistory.length - 1].role === "user") {
+    mascotChatHistory[mascotChatHistory.length - 1].content = userMessage;
+  } else {
+    mascotChatHistory.push({ role: "user", content: userMessage });
+  }
 
-  // Keep history manageable (last 20 messages + system)
   if (mascotChatHistory.length > 22) {
     mascotChatHistory = [mascotChatHistory[0], ...mascotChatHistory.slice(-20)];
   }
 
+  mascotAbortController = new AbortController();
+  const signal = mascotAbortController.signal;
+
   try {
     const apiKey = getOpenRouterKey();
-    console.log("[mascot] Sending chat, key length:", apiKey.length, "history:", mascotChatHistory.length);
-
-    const body = JSON.stringify({
-      model: "openrouter/free",
-      messages: mascotChatHistory,
-      max_tokens: 200,
-    });
+    chatLog(`[mascot] gen=${genId} Sending: "${userMessage.slice(0, 50)}" history=${mascotChatHistory.length}`);
 
     const res = await net.fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -316,28 +337,34 @@ async function handleMascotChat(userMessage: string) {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`,
       },
-      body,
+      body: JSON.stringify({
+        model: "openrouter/free",
+        messages: mascotChatHistory,
+        max_tokens: 200,
+      }),
+      signal,
     });
 
-    const responseData = await res.json();
-    console.log("[mascot] Response status:", res.status, "ok:", res.ok);
+    if (genId !== mascotChatGenId) return; // stale
 
-    if (!res.ok) {
-      throw new Error(`API error ${res.status}: ${JSON.stringify(responseData)}`);
-    }
+    const responseData = await res.json();
+    if (!res.ok) throw new Error(`API error ${res.status}: ${JSON.stringify(responseData)}`);
 
     const reply = responseData?.choices?.[0]?.message?.content || "...";
-    console.log("[mascot] Reply:", reply.slice(0, 100));
+    chatLog(`[mascot] gen=${genId} Reply: "${reply.slice(0, 100)}"`);
     mascotChatHistory.push({ role: "assistant", content: reply });
 
     if (mascotWindow && !mascotWindow.isDestroyed()) {
       mascotWindow.webContents.send("mascot-chat-response", reply);
     }
   } catch (err: any) {
-    console.error("[mascot] Chat error:", err.message);
+    if (signal.aborted || genId !== mascotChatGenId) return; // cancelled or stale
+    chatLog(`[mascot] gen=${genId} ERROR: ${err.message}`);
     if (mascotWindow && !mascotWindow.isDestroyed()) {
       mascotWindow.webContents.send("mascot-chat-error", "Chat error: " + err.message);
     }
+  } finally {
+    if (genId === mascotChatGenId) mascotAbortController = null;
   }
 }
 
