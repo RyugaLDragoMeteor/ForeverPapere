@@ -46,8 +46,18 @@ A live wallpaper engine for Windows with AI-powered wallpaper generation, a visu
 - Two-box UI: latest message on top, input/waiting indicator on bottom
 - Always-on-top so it's visible over all windows
 
+### Smart Chatbox Placement (Screen Heatmap)
+- Captures the screen at 3fps and analyzes a 42x24 grid (1008 cells) for activity
+- Chatboxes automatically spawn in the calmest, most monotone areas of your screen
+- Scoring combines motion detection (pixel diff between frames), per-cell color variance, and cross-cell uniformity — single solid-color regions score best
+- Biased toward screen edges, corners, top, and bottom for natural placement
+- Occupied cells are tracked so new chatboxes never overlap existing ones
+- Per-chatbox opacity fading: when motion is detected at a chatbox's position, it fades out proportionally; when the area calms down, it slowly fades back in (2s CSS transition)
+- Exponential decay on the activity grid means old motion is forgotten naturally
+
 ### Frontpaper Overlay
 - Transparent click-through overlay at the highest Z-index
+- Hosts the smart chatboxes as DOM elements (no separate windows)
 - Renders above all windows without blocking interaction
 - Respects taskbar bounds
 

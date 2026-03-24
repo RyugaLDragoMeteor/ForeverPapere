@@ -9,7 +9,6 @@ import { startOAuthFlow, hasApiKey as hasOpenRouterKey, saveApiKey as saveOpenRo
 import { generateImage as xaiGenerateImage, generateVideo, generateCharacterVideo, saveApiKey as saveXaiKey, hasApiKey as hasXaiKey } from "./xai-api";
 import { closeDb, importMedia, getAllMedia, getDefaultWallpaper, ensureCharacter, linkMediaToCharacter, VIDEOS_DIR, IMAGES_DIR, MEDIA_DIR } from "./media-db";
 import { ChatboxPosition, detectAspectRatio, computeChatboxBounds, createTrayIconBuffer, getSpriteAlign, CHATBOX_WIDTH, CHATBOX_HEIGHT } from "./utils";
-import { createHeatmapState, computeFrameDiff, computeColorVariance, isSceneChange, updateSlidingWindow, resetSlidingWindow, findCalmestPosition, gridToScreen, GRID_COLS, GRID_ROWS, HeatmapState } from "./screen-heatmap";
 
 function getNative(): typeof import("./wallpaper-native") {
   return require("./wallpaper-native");
@@ -39,7 +38,6 @@ function markIntroSeen(): void {
 let wallpaperWindows: BrowserWindow[] = [];
 let frontpaperWindow: BrowserWindow | null = null;
 let chatboxWindow: BrowserWindow | null = null;
-let heatmapChatbox: BrowserWindow | null = null;
 let promptWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 
@@ -983,145 +981,262 @@ function startScreenCommentary() {
   screenCommentTimer = setTimeout(() => captureAndComment(), initialDelay);
 }
 
-// ── Heatmap chatbox (positioned by screen activity analysis) ─
-function createHeatmapChatbox() {
-  if (heatmapChatbox && !heatmapChatbox.isDestroyed()) return;
+// ── Screen heatmap — positions chatbox div inside frontpaper ─
+const HMAP_COLS = 42;
+const HMAP_ROWS = 24;
+const HMAP_CELLS = HMAP_COLS * HMAP_ROWS;
+const HMAP_INTERVAL = 333; // 3fps
+const HMAP_DECAY = 0.88; // exponential decay per frame (~2.4s half-life at 3fps)
+const HMAP_BLOCK_W = 7; // chatbox ~300px ≈ 7 cells wide at 42-col grid
+const HMAP_BLOCK_H = 1; // chatbox ~40px ≈ 1 cell tall at 24-row grid
+const HMAP_JITTER = 3.0; // only move if current spot is 3x worse than best
 
-  const primary = screen.getPrimaryDisplay();
-  const workArea = primary.workAreaSize;
+let hmapGrid = new Float32Array(HMAP_CELLS);     // motion score
+let hmapVarGrid = new Float32Array(HMAP_CELLS);   // color variance score
+let hmapPrevFrame: Uint8Array | null = null;
+let hmapOccupied: Set<string> = new Set();         // "row,col" keys of occupied blocks
+let hmapTimer: ReturnType<typeof setInterval> | null = null;
+let hmapSkipFrames = 0;
+let hmapFrameCount = 0;
+const HMAP_SPAWN_INTERVAL = 30; // spawn a new chatbox every ~10 seconds (30 frames at 3fps)
 
-  heatmapChatbox = new BrowserWindow({
-    width: 300,
-    height: 60,
-    x: Math.round(workArea.width / 2 - 150),
-    y: Math.round(workArea.height / 2 - 30),
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
-    focusable: false,
-    hasShadow: false,
-    show: false,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
-
-  heatmapChatbox.setIgnoreMouseEvents(true);
-  heatmapChatbox.loadFile(path.join(__dirname, "..", "..", "heatmap-chatbox.html"));
-
-  heatmapChatbox.once("ready-to-show", () => {
-    heatmapChatbox?.show();
-    console.log("[heatmap-chatbox] Shown");
-  });
-
-  heatmapChatbox.on("closed", () => { heatmapChatbox = null; });
+let hmapChatboxId = 0;
+const hmapSpawnedBoxes: { id: number; row: number; col: number }[] = [];
+function spawnChatboxDiv(x: number, y: number, text: string) {
+  if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
+  hmapChatboxId++;
+  const id = `calm-cb-${hmapChatboxId}`;
+  const escaped = text.replace(/'/g, "\\'").replace(/\n/g, " ");
+  frontpaperWindow.webContents.executeJavaScript(`
+    (() => {
+      const box = document.createElement('div');
+      box.id = '${id}';
+      box.className = 'calm-chatbox';
+      box.style.left = '${x}px';
+      box.style.top = '${y}px';
+      box.textContent = '${escaped}';
+      document.getElementById('overlay').appendChild(box);
+    })()
+  `).catch(() => {});
+  console.log(`[heatmap] Spawned chatbox #${hmapChatboxId} at (${x},${y})`);
 }
 
-// ── Screen heatmap for dynamic chatbox positioning ──────────
-let heatmapState: HeatmapState | null = null;
-let heatmapTimer: ReturnType<typeof setInterval> | null = null;
-const HEATMAP_CAPTURE_W = 160;
-const HEATMAP_CAPTURE_H = 90;
-const HEATMAP_INTERVAL_MS = 250; // 4fps
-const CHATBOX_BLOCK_W = 3; // ~300px wide = ~2.5 cells, round up to 3
-const CHATBOX_BLOCK_H = 1; // ~60px tall = ~0.5 cell, round up to 1
-const MIN_MOVE_INTERVAL_MS = 3000; // don't move more often than every 3s
+function removeChatboxDiv(id: number) {
+  if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
+  frontpaperWindow.webContents.executeJavaScript(
+    `document.getElementById('calm-cb-${id}')?.remove()`
+  ).catch(() => {});
+}
 
-let heatmapFrameCount = 0;
-async function captureForHeatmap() {
-  heatmapFrameCount++;
-  if (!heatmapState || !heatmapChatbox || heatmapChatbox.isDestroyed()) return;
-
+let hmapBusy = false;
+async function hmapTick() {
+  if (hmapBusy) return; // skip if previous capture still processing
+  if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
+  hmapBusy = true;
   try {
     const sources = await desktopCapturer.getSources({
       types: ["screen"],
-      thumbnailSize: { width: HEATMAP_CAPTURE_W, height: HEATMAP_CAPTURE_H },
+      thumbnailSize: { width: 640, height: 360 },
     });
+
     if (sources.length === 0) return;
 
     const thumb = sources[0].thumbnail;
-    const actualW = thumb.getSize().width;
-    const actualH = thumb.getSize().height;
-    const bitmap = thumb.toBitmap();
-    const currentFrame = new Uint8Array(bitmap);
-    if (heatmapFrameCount <= 2) console.log(`[heatmap] Capture: ${actualW}x${actualH} (${bitmap.length} bytes)`);
+    const w = thumb.getSize().width;
+    const h = thumb.getSize().height;
+    const frame = new Uint8Array(thumb.toBitmap());
 
-    if (!heatmapState.previousFrame) {
-      heatmapState.previousFrame = currentFrame;
-      console.log(`[heatmap] First frame captured (${currentFrame.length} bytes)`);
+    if (!hmapPrevFrame) {
+      hmapPrevFrame = frame;
+      // Save first capture so we can see what the heatmap sees
+      try {
+        const debugJpg = thumb.toJPEG(90);
+        fs.writeFileSync(path.join(MEDIA_DIR, "..", "heatmap-debug.jpg"), debugJpg);
+        console.log("[heatmap] Debug frame saved to heatmap-debug.jpg");
+      } catch (_) {}
       return;
     }
 
-    const cellDiffs = computeFrameDiff(
-      heatmapState.previousFrame, currentFrame,
-      actualW, actualH,
-    );
-
-    if (isSceneChange(cellDiffs)) {
-      resetSlidingWindow(heatmapState);
-      heatmapState.previousFrame = currentFrame;
+    // Skip frames after a teleport so the chatbox appearing isn't detected as motion
+    if (hmapSkipFrames > 0) {
+      hmapSkipFrames--;
+      hmapPrevFrame = frame;
       return;
     }
 
-    if (heatmapState.cooldownFrames > 0) {
-      heatmapState.cooldownFrames--;
-      heatmapState.previousFrame = currentFrame;
-      return;
+    const cellW = w / HMAP_COLS;
+    const cellH = h / HMAP_ROWS;
+
+    // Single pass: compute per-cell motion diff + color variance, update grid
+    for (let row = 0; row < HMAP_ROWS; row++) {
+      for (let col = 0; col < HMAP_COLS; col++) {
+        const sx = Math.floor(col * cellW);
+        const ex = Math.floor((col + 1) * cellW);
+        const sy = Math.floor(row * cellH);
+        const ey = Math.floor((row + 1) * cellH);
+
+        let diffSum = 0;
+        let rSum = 0, gSum = 0, bSum = 0;
+        let r2Sum = 0, g2Sum = 0, b2Sum = 0;
+        let n = 0;
+
+        for (let y = sy; y < ey; y++) {
+          for (let x = sx; x < ex; x++) {
+            const i = (y * w + x) * 4;
+            // Motion diff
+            diffSum += (Math.abs(frame[i] - hmapPrevFrame[i]) +
+                        Math.abs(frame[i+1] - hmapPrevFrame[i+1]) +
+                        Math.abs(frame[i+2] - hmapPrevFrame[i+2])) / 3;
+            // Color variance
+            const r = frame[i], g = frame[i+1], b = frame[i+2];
+            rSum += r; gSum += g; bSum += b;
+            r2Sum += r*r; g2Sum += g*g; b2Sum += b*b;
+            n++;
+          }
+        }
+
+        const avgDiff = n > 0 ? diffSum / n : 0;
+        const variance = n > 0
+          ? ((r2Sum/n - (rSum/n)**2) + (g2Sum/n - (gSum/n)**2) + (b2Sum/n - (bSum/n)**2)) / 3
+          : 0;
+
+        // Motion + color variance combined
+        const cellScore = avgDiff + variance * 0.3;
+        const idx = row * HMAP_COLS + col;
+        hmapGrid[idx] = hmapGrid[idx] * HMAP_DECAY + avgDiff * (1 - HMAP_DECAY);
+        hmapVarGrid[idx] = hmapVarGrid[idx] * HMAP_DECAY + variance * (1 - HMAP_DECAY);
+      }
     }
 
-    updateSlidingWindow(heatmapState, cellDiffs);
-    heatmapState.previousFrame = currentFrame;
+    hmapPrevFrame = frame;
+    hmapFrameCount++;
 
-    // Log every 20 frames (~5s) to file
-    if (heatmapState.bufferCount % 20 === 0) {
-      const maxActivity = Math.max(...heatmapState.grid);
-      const minActivity = Math.min(...heatmapState.grid);
-      const msg = `frames=${heatmapState.bufferCount} min=${minActivity.toFixed(1)} max=${maxActivity.toFixed(1)} pos=${heatmapState.currentPos ? `(${heatmapState.currentPos.row},${heatmapState.currentPos.col})` : "none"}`;
-      console.log(`[heatmap] ${msg}`);
-      try { fs.appendFileSync(path.join(MEDIA_DIR, "..", "heatmap.log"), new Date().toISOString() + " " + msg + "\n"); } catch (_) {}
+    // Per-chatbox opacity based on local motion at each box's grid cells
+    if (frontpaperWindow && !frontpaperWindow.isDestroyed() && hmapSpawnedBoxes.length > 0) {
+      let js = "";
+      for (const box of hmapSpawnedBoxes) {
+        let localMotion = 0;
+        for (let br = 0; br < HMAP_BLOCK_H; br++) {
+          for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+            const r = box.row + br, c = box.col + bc;
+            if (r < HMAP_ROWS && c < HMAP_COLS) localMotion += hmapGrid[r * HMAP_COLS + c];
+          }
+        }
+        const avgLocal = localMotion / (HMAP_BLOCK_W * HMAP_BLOCK_H);
+        const opacity = avgLocal > 15 ? 0.1 : avgLocal > 8 ? 0.3 : avgLocal > 4 ? 0.6 : 1.0;
+        js += `{const e=document.getElementById('calm-cb-${box.id}');if(e)e.style.opacity='${opacity}';}`;
+      }
+      frontpaperWindow.webContents.executeJavaScript(js).catch(() => {});
     }
 
-    // Find calmest position (factoring in color variance for monotone preference)
-    const now = Date.now();
-    if (now - heatmapState.lastMoveTime < MIN_MOVE_INTERVAL_MS) return;
+    // Only try to spawn a new chatbox periodically
+    if (hmapFrameCount % HMAP_SPAWN_INTERVAL !== 0) return;
+    try { fs.appendFileSync(path.join(MEDIA_DIR, "..", "heatmap.log"), new Date().toISOString() + ` spawn check frame=${hmapFrameCount} occupied=${hmapOccupied.size}\n`); } catch (_) {}
 
-    const colorVar = computeColorVariance(currentFrame, actualW, actualH);
-    const newPos = findCalmestPosition(heatmapState, CHATBOX_BLOCK_W, CHATBOX_BLOCK_H, colorVar);
-    if (!newPos) return;
+    // Find best unoccupied position (low motion + low variance = calm monotone)
+    let bestScore = Infinity;
+    let bestRow = -1;
+    let bestCol = -1;
 
-    // Convert to screen coords and teleport instantly
-    const primary = screen.getPrimaryDisplay();
-    const workArea = primary.workAreaSize;
-    const screenPos = gridToScreen(newPos.row, newPos.col, workArea.width, workArea.height);
+    for (let row = 3; row <= HMAP_ROWS - HMAP_BLOCK_H - 1; row++) {
+      for (let col = 0; col <= HMAP_COLS - HMAP_BLOCK_W; col++) {
+        // Skip if this block overlaps any occupied block
+        let occupied = false;
+        for (let br = 0; br < HMAP_BLOCK_H && !occupied; br++) {
+          for (let bc = 0; bc < HMAP_BLOCK_W && !occupied; bc++) {
+            if (hmapOccupied.has(`${row + br},${col + bc}`)) occupied = true;
+          }
+        }
+        if (occupied) continue;
 
-    const boxW = 300;
-    const boxH = 60;
-    const x = Math.min(screenPos.x, workArea.width - boxW);
-    const y = Math.min(screenPos.y, workArea.height - boxH);
+        let motionScore = 0;
+        let varScore = 0;
+        const cellVars: number[] = [];
+        for (let br = 0; br < HMAP_BLOCK_H; br++) {
+          for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+            const idx = (row + br) * HMAP_COLS + (col + bc);
+            motionScore += hmapGrid[idx];
+            varScore += hmapVarGrid[idx];
+            cellVars.push(hmapVarGrid[idx]);
+          }
+        }
 
-    heatmapChatbox.setBounds({ x, y, width: boxW, height: boxH });
+        // Penalize blocks where cells have different variance levels
+        // (means different monotone patches = 2+ colors, not a single uniform area)
+        let crossCellVar = 0;
+        if (cellVars.length > 1) {
+          const avg = cellVars.reduce((a, b) => a + b, 0) / cellVars.length;
+          crossCellVar = cellVars.reduce((a, v) => a + (v - avg) ** 2, 0) / cellVars.length;
+        }
 
-    heatmapState.currentPos = newPos;
-    heatmapState.lastMoveTime = now;
-    const teleportMsg = `Teleported to grid(${newPos.row},${newPos.col}) → screen(${x},${y})`;
-    console.log(`[heatmap] ${teleportMsg}`);
-    try { fs.appendFileSync(path.join(MEDIA_DIR, "..", "heatmap.log"), new Date().toISOString() + " " + teleportMsg + "\n"); } catch (_) {}
-  } catch (err: any) {
-    console.error("[heatmap] Error:", err?.message || err);
+        // Combined: motion + per-cell variance + cross-cell uniformity penalty
+        let score = motionScore + varScore * 2.0 + crossCellVar * 3.0;
+
+        // Perimeter bias — prefer edges, corners, top, bottom
+        // Distance from nearest edge (0 = on edge, higher = more center)
+        const distLeft = col;
+        const distRight = HMAP_COLS - HMAP_BLOCK_W - col;
+        const distTop = row - 3; // offset by min row
+        const distBottom = HMAP_ROWS - HMAP_BLOCK_H - 1 - row;
+        const edgeDistX = Math.min(distLeft, distRight);
+        const edgeDistY = Math.min(distTop, distBottom);
+        const edgeDist = Math.min(edgeDistX, edgeDistY);
+        const maxDist = Math.min(HMAP_COLS / 2, HMAP_ROWS / 2);
+        // Center gets up to 2x penalty, edges get 1x (no penalty)
+        const edgeFactor = 1.0 + (edgeDist / maxDist) * 1.0;
+        score *= edgeFactor;
+        if (score < bestScore) {
+          bestScore = score;
+          bestRow = row;
+          bestCol = col;
+        }
+      }
+    }
+
+    if (bestRow < 0) return; // no valid unoccupied spot
+
+    // Spawn new chatbox
+    const workArea = screen.getPrimaryDisplay().workAreaSize;
+    const x = Math.min(Math.round((bestCol / HMAP_COLS) * workArea.width), workArea.width - 310);
+    const y = Math.min(Math.round((bestRow / HMAP_ROWS) * workArea.height), workArea.height - 60);
+
+    // Log score breakdown
+    let dbgMotion = 0, dbgVar = 0, dbgCross = 0;
+    const cellVarsDbg: number[] = [];
+    for (let br = 0; br < HMAP_BLOCK_H; br++) {
+      for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+        const idx = (bestRow + br) * HMAP_COLS + (bestCol + bc);
+        dbgMotion += hmapGrid[idx];
+        dbgVar += hmapVarGrid[idx];
+        cellVarsDbg.push(hmapVarGrid[idx]);
+      }
+    }
+    if (cellVarsDbg.length > 1) {
+      const avg = cellVarsDbg.reduce((a, b) => a + b, 0) / cellVarsDbg.length;
+      dbgCross = cellVarsDbg.reduce((a, v) => a + (v - avg) ** 2, 0) / cellVarsDbg.length;
+    }
+    try { fs.appendFileSync(path.join(MEDIA_DIR, "..", "heatmap.log"),
+      new Date().toISOString() + ` SPAWN (${bestRow},${bestCol}) → (${x},${y}) motion=${dbgMotion.toFixed(1)} var=${dbgVar.toFixed(1)} crossVar=${dbgCross.toFixed(1)} total=${bestScore.toFixed(1)}\n`);
+    } catch (_) {}
+
+    spawnChatboxDiv(x, y, "A new thought...");
+    hmapSpawnedBoxes.push({ id: hmapChatboxId, row: bestRow, col: bestCol });
+
+    // Mark cells as occupied
+    for (let br = 0; br < HMAP_BLOCK_H; br++) {
+      for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+        hmapOccupied.add(`${bestRow + br},${bestCol + bc}`);
+      }
+    }
+    hmapSkipFrames = 2;
+  } catch (_) {} finally {
+    hmapBusy = false;
   }
 }
 
 function startHeatmap() {
-  createHeatmapChatbox();
-  heatmapState = createHeatmapState();
-  console.log(`[heatmap] chatbox=${!!heatmapChatbox} state=${!!heatmapState}`);
-  heatmapTimer = setInterval(() => {
-    captureForHeatmap().catch(e => console.error("[heatmap] capture error:", e));
-  }, HEATMAP_INTERVAL_MS);
-  console.log("[heatmap] Started (4fps capture, 5s sliding window)");
+  hmapTimer = setInterval(() => hmapTick().catch(() => {}), HMAP_INTERVAL);
+  console.log("[heatmap] Started (4fps, exponential decay)");
 }
 
 // ── Cleanup ──────────────────────────────────────────────────
@@ -1129,7 +1244,7 @@ function cleanup() {
   console.log("[forever-papere] Cleaning up...");
   if (autoGenTimer) { clearInterval(autoGenTimer); autoGenTimer = null; }
   if (screenCommentTimer) { clearTimeout(screenCommentTimer); screenCommentTimer = null; }
-  if (heatmapTimer) { clearInterval(heatmapTimer); heatmapTimer = null; }
+  if (hmapTimer) { clearInterval(hmapTimer); hmapTimer = null; }
   try { getNative().detach(); } catch (_) {}
   try { getNative().reset(); } catch (_) {}
   try { closeDb(); } catch (_) {}
@@ -1138,7 +1253,6 @@ function cleanup() {
   }
   wallpaperWindows = [];
   if (chatboxWindow && !chatboxWindow.isDestroyed()) chatboxWindow.close();
-  if (heatmapChatbox && !heatmapChatbox.isDestroyed()) heatmapChatbox.close();
   if (frontpaperWindow && !frontpaperWindow.isDestroyed()) frontpaperWindow.close();
   if (tray) { tray.destroy(); tray = null; }
 }

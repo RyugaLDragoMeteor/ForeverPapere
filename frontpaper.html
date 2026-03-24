@@ -18,26 +18,26 @@
       position: relative;
       pointer-events: none;
     }
-    .frontpaper-element {
-      pointer-events: none;
+    .calm-chatbox {
       position: absolute;
-    }
-    #test-text {
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
-      font-family: 'Segoe UI', Arial, sans-serif;
-      font-size: 48px;
-      font-weight: bold;
-      color: white;
-      text-shadow: 2px 2px 8px rgba(0,0,0,0.7);
+      width: 300px;
+      min-height: 40px;
+      background: rgba(20, 20, 45, 0.88);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      border-radius: 12px;
+      padding: 12px 14px;
+      color: #e0e0ff;
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
       pointer-events: none;
+      transition: opacity 2s ease;
     }
   </style>
 </head>
 <body>
   <div id="overlay">
-    <!-- Frontpaper elements go here -->
+    <!-- Chatboxes spawned dynamically by heatmap -->
   </div>
 </body>
 </html>
