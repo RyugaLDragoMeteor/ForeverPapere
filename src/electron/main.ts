@@ -952,35 +952,35 @@ async function captureAndComment() {
     })();
 
     const visionModels = [
-      "nvidia/nemotron-nano-12b-v2-vl:free",
       "mistralai/mistral-small-3.1-24b-instruct:free",
       "google/gemma-3-27b-it:free",
       "google/gemma-3-12b-it:free",
+      "nvidia/nemotron-nano-12b-v2-vl:free",
     ];
 
     const msgBody = {
       messages: [
         {
+          role: "system",
+          content: `You are ${characterName}, a helpful desktop companion. You MUST always respond with exactly one short sentence about what you see on the screen. Never respond with nothing.`,
+        },
+        {
           role: "user",
           content: [
-            { type: "text", text: `You are ${characterName}, a helpful desktop companion who can see the user's screen. Look carefully at what they're doing and respond with ONE of these (1-2 sentences max, be concise):
-- If you see an error, bug, or problem: point it out and suggest a fix
-- If you see code: offer a tip, spot a potential issue, or suggest an improvement
-- If they seem stuck or idle: offer encouragement or a helpful suggestion
-- If you see something interesting: comment on it or give relevant advice
-- Otherwise: make a brief, natural observation about what they're working on
-Be genuinely helpful, not just chatty. Prioritize actionable advice over casual comments.` },
+            { type: "text", text: "Look at my screen and tell me what you see. If there's a problem, error, or something I could improve, point it out. If I'm coding, give a quick tip. Otherwise just comment on what I'm doing. Reply in 1-2 sentences max." },
             { type: "image_url", image_url: { url: dataUri } },
           ],
         },
       ],
-      max_tokens: 100,
+      max_tokens: 150,
     };
 
     let comment: string | undefined;
     for (const model of visionModels) {
       scLog(`[screen-comment] Trying: ${model}`);
       try {
+        const ac = new AbortController();
+        const timeout = setTimeout(() => ac.abort(), 30000); // 30s timeout
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -990,7 +990,9 @@ Be genuinely helpful, not just chatty. Prioritize actionable advice over casual 
             "X-Title": "ForeverPapere",
           },
           body: JSON.stringify({ model, ...msgBody }),
+          signal: ac.signal,
         });
+        clearTimeout(timeout);
         if (response.ok) {
           const data = await response.json();
           comment = data.choices?.[0]?.message?.content?.trim();
@@ -1000,9 +1002,8 @@ Be genuinely helpful, not just chatty. Prioritize actionable advice over casual 
           scLog(`[screen-comment] ${model} → ${response.status}`);
         }
       } catch (e: any) {
-        scLog(`[screen-comment] ${model} error: ${e.message}`);
+        scLog(`[screen-comment] ${model} ${e.name === "AbortError" ? "TIMEOUT" : "error"}: ${e.message}`);
       }
-      // Small delay between retries
       await new Promise(r => setTimeout(r, 2000));
     }
 
