@@ -9,14 +9,11 @@
       height: 100%;
       overflow: hidden;
       background: transparent;
-      -webkit-app-region: no-drag;
-      pointer-events: none;
     }
     #overlay {
       width: 100%;
       height: 100%;
       position: relative;
-      pointer-events: none;
     }
     .calm-chatbox {
       position: absolute;
@@ -30,42 +27,24 @@
       font-family: 'Segoe UI', sans-serif;
       font-size: 13px;
       line-height: 1.5;
-      pointer-events: auto;
+      cursor: pointer;
       transition: opacity 2s ease;
-      cursor: default;
+    }
+    .calm-chatbox:hover {
+      border-color: rgba(255, 100, 100, 0.6);
     }
   </style>
 </head>
 <body>
-  <div id="overlay">
-    <!-- Chatboxes spawned dynamically by heatmap -->
-  </div>
+  <div id="overlay"></div>
   <script>
-    let isOverChatbox = false;
-
-    // Throttled hover detection — only sends IPC when state changes
-    document.addEventListener("mousemove", (e) => {
-      const over = !!e.target?.closest?.(".calm-chatbox");
-      if (over !== isOverChatbox) {
-        isOverChatbox = over;
-        window.frontpaperAPI?.setHover(over);
+    // Left click on a chatbox removes it
+    document.getElementById("overlay").addEventListener("click", (e) => {
+      const box = e.target.closest(".calm-chatbox");
+      if (box && box.id) {
+        box.remove();
+        window.frontpaperAPI?.removeChatbox(box.id);
       }
-    });
-
-    // Middle click removes the chatbox
-    document.addEventListener("mousedown", (e) => {
-      if (e.button === 1) {
-        const box = e.target?.closest?.(".calm-chatbox");
-        if (box?.id) {
-          e.preventDefault();
-          window.frontpaperAPI?.removeChatbox(box.id);
-        }
-      }
-    });
-
-    // Prevent middle-click paste/scroll on chatboxes
-    document.addEventListener("auxclick", (e) => {
-      if (e.button === 1) e.preventDefault();
     });
   </script>
 </body>

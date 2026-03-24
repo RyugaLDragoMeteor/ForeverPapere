@@ -75,7 +75,7 @@ function createFrontpaperWindow() {
     },
   });
 
-  frontpaperWindow.setIgnoreMouseEvents(true, { forward: true });
+  frontpaperWindow.setIgnoreMouseEvents(true);
   frontpaperWindow.loadFile(path.join(__dirname, "..", "..", "frontpaper.html"));
 
   frontpaperWindow.webContents.on("console-message", (_e, _level, message) => {
@@ -360,38 +360,6 @@ ipcMain.on("mascot-send-chat", (_e, message: string) => {
   handleMascotChat(message);
 });
 
-// Frontpaper mouse toggle — renderer tells us when cursor is over a chatbox
-ipcMain.on("frontpaper-hover", (_e, overChatbox: boolean) => {
-  if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
-  if (overChatbox) {
-    frontpaperWindow.setIgnoreMouseEvents(false);
-  } else {
-    frontpaperWindow.setIgnoreMouseEvents(true, { forward: true });
-  }
-});
-
-ipcMain.on("frontpaper-remove-chatbox", (_e, id: string) => {
-  const idx = hmapSpawnedBoxes.findIndex(b => `calm-cb-${b.id}` === id);
-  if (idx >= 0) {
-    const box = hmapSpawnedBoxes[idx];
-    for (let br = 0; br < HMAP_BLOCK_H; br++) {
-      for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
-        hmapOccupied.delete(`${box.row + br},${box.col + bc}`);
-      }
-    }
-    hmapSpawnedBoxes.splice(idx, 1);
-  }
-  if (frontpaperWindow && !frontpaperWindow.isDestroyed()) {
-    frontpaperWindow.webContents.executeJavaScript(
-      `document.getElementById('${id}')?.remove()`
-    ).catch(() => {});
-  }
-  // Re-enable pass-through
-  if (frontpaperWindow && !frontpaperWindow.isDestroyed()) {
-    frontpaperWindow.setIgnoreMouseEvents(true, { forward: true });
-  }
-  console.log(`[heatmap] Removed chatbox ${id}`);
-});
 
 ipcMain.on("chatbox-dismiss", () => {
   if (chatboxWindow && !chatboxWindow.isDestroyed()) {
@@ -959,7 +927,13 @@ async function captureAndComment() {
         {
           role: "user",
           content: [
-            { type: "text", text: `You are ${characterName}, a friendly desktop companion. You can see the user's screen. Make a brief, casual comment (1-2 sentences) about what they're doing. Be playful, encouraging, or mildly sarcastic. Keep it short and natural. What do you think about what I'm doing?` },
+            { type: "text", text: `You are ${characterName}, a helpful desktop companion who can see the user's screen. Look carefully at what they're doing and respond with ONE of these (1-2 sentences max, be concise):
+- If you see an error, bug, or problem: point it out and suggest a fix
+- If you see code: offer a tip, spot a potential issue, or suggest an improvement
+- If they seem stuck or idle: offer encouragement or a helpful suggestion
+- If you see something interesting: comment on it or give relevant advice
+- Otherwise: make a brief, natural observation about what they're working on
+Be genuinely helpful, not just chatty. Prioritize actionable advice over casual comments.` },
             { type: "image_url", image_url: { url: dataUri } },
           ],
         },
@@ -1048,31 +1022,63 @@ let hmapFrameCount = 0;
 const HMAP_SPAWN_INTERVAL = 30; // spawn a new chatbox every ~10 seconds (30 frames at 3fps)
 
 let hmapChatboxId = 0;
-const hmapSpawnedBoxes: { id: number; row: number; col: number }[] = [];
-function spawnChatboxDiv(x: number, y: number, text: string) {
-  if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
-  hmapChatboxId++;
-  const id = `calm-cb-${hmapChatboxId}`;
-  const escaped = text.replace(/'/g, "\\'").replace(/\n/g, " ");
-  frontpaperWindow.webContents.executeJavaScript(`
-    (() => {
-      const box = document.createElement('div');
-      box.id = '${id}';
-      box.className = 'calm-chatbox';
-      box.style.left = '${x}px';
-      box.style.top = '${y}px';
-      box.textContent = '${escaped}';
-      document.getElementById('overlay').appendChild(box);
-    })()
-  `).catch(() => {});
-  console.log(`[heatmap] Spawned chatbox #${hmapChatboxId} at (${x},${y})`);
-}
+const hmapSpawnedBoxes: { id: number; row: number; col: number; win: BrowserWindow }[] = [];
 
-function removeChatboxDiv(id: number) {
-  if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
-  frontpaperWindow.webContents.executeJavaScript(
-    `document.getElementById('calm-cb-${id}')?.remove()`
-  ).catch(() => {});
+function spawnChatboxWindow(x: number, y: number, text: string, row: number, col: number) {
+  hmapChatboxId++;
+  const id = hmapChatboxId;
+
+  const win = new BrowserWindow({
+    width: 300,
+    height: 55,
+    x, y,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    hasShadow: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "bubble-preload.js"),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  win.loadFile(path.join(__dirname, "..", "..", "chatbox-bubble.html"));
+  win.once("ready-to-show", () => win.showInactive());
+
+  // When this bubble wants to close itself
+  win.webContents.on("ipc-message", (_e, channel) => {
+    if (channel === "bubble-close") {
+      // Free occupied cells
+      const idx = hmapSpawnedBoxes.findIndex(b => b.id === id);
+      if (idx >= 0) {
+        const box = hmapSpawnedBoxes[idx];
+        for (let br = 0; br < HMAP_BLOCK_H; br++) {
+          for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+            hmapOccupied.delete(`${box.row + br},${box.col + bc}`);
+          }
+        }
+        hmapSpawnedBoxes.splice(idx, 1);
+      }
+      // Hide instantly, destroy async to avoid click lag
+      if (!win.isDestroyed()) {
+        win.hide();
+        setTimeout(() => { if (!win.isDestroyed()) win.close(); }, 100);
+      }
+      console.log(`[heatmap] Bubble #${id} closed by click`);
+    }
+  });
+
+  win.on("closed", () => {
+    const idx = hmapSpawnedBoxes.findIndex(b => b.id === id);
+    if (idx >= 0) hmapSpawnedBoxes.splice(idx, 1);
+  });
+
+  hmapSpawnedBoxes.push({ id, row, col, win });
+  console.log(`[heatmap] Spawned bubble #${id} at (${x},${y})`);
 }
 
 let hmapBusy = false;
@@ -1158,22 +1164,19 @@ async function hmapTick() {
     hmapPrevFrame = frame;
     hmapFrameCount++;
 
-    // Per-chatbox opacity based on local motion at each box's grid cells
-    if (frontpaperWindow && !frontpaperWindow.isDestroyed() && hmapSpawnedBoxes.length > 0) {
-      let js = "";
-      for (const box of hmapSpawnedBoxes) {
-        let localMotion = 0;
-        for (let br = 0; br < HMAP_BLOCK_H; br++) {
-          for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
-            const r = box.row + br, c = box.col + bc;
-            if (r < HMAP_ROWS && c < HMAP_COLS) localMotion += hmapGrid[r * HMAP_COLS + c];
-          }
+    // Per-chatbox opacity based on local motion
+    for (const box of hmapSpawnedBoxes) {
+      if (box.win.isDestroyed()) continue;
+      let localMotion = 0;
+      for (let br = 0; br < HMAP_BLOCK_H; br++) {
+        for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+          const r = box.row + br, c = box.col + bc;
+          if (r < HMAP_ROWS && c < HMAP_COLS) localMotion += hmapGrid[r * HMAP_COLS + c];
         }
-        const avgLocal = localMotion / (HMAP_BLOCK_W * HMAP_BLOCK_H);
-        const opacity = avgLocal > 15 ? 0.1 : avgLocal > 8 ? 0.3 : avgLocal > 4 ? 0.6 : 1.0;
-        js += `{const e=document.getElementById('calm-cb-${box.id}');if(e)e.style.opacity='${opacity}';}`;
       }
-      frontpaperWindow.webContents.executeJavaScript(js).catch(() => {});
+      const avgLocal = localMotion / (HMAP_BLOCK_W * HMAP_BLOCK_H);
+      const opacity = avgLocal > 15 ? 0.1 : avgLocal > 8 ? 0.3 : avgLocal > 4 ? 0.6 : 1.0;
+      box.win.setOpacity(opacity);
     }
 
     // Only try to spawn a new chatbox periodically
@@ -1241,6 +1244,7 @@ async function hmapTick() {
     }
 
     if (bestRow < 0) return; // no valid unoccupied spot
+    if (hmapSpawnedBoxes.length >= 10) return; // cap at 10 bubbles
 
     // Spawn new chatbox
     const workArea = screen.getPrimaryDisplay().workAreaSize;
@@ -1266,8 +1270,7 @@ async function hmapTick() {
       new Date().toISOString() + ` SPAWN (${bestRow},${bestCol}) → (${x},${y}) motion=${dbgMotion.toFixed(1)} var=${dbgVar.toFixed(1)} crossVar=${dbgCross.toFixed(1)} total=${bestScore.toFixed(1)}\n`);
     } catch (_) {}
 
-    spawnChatboxDiv(x, y, "A new thought...");
-    hmapSpawnedBoxes.push({ id: hmapChatboxId, row: bestRow, col: bestCol });
+    spawnChatboxWindow(x, y, "A new thought...", bestRow, bestCol);
 
     // Mark cells as occupied
     for (let br = 0; br < HMAP_BLOCK_H; br++) {
@@ -1292,6 +1295,8 @@ function cleanup() {
   if (autoGenTimer) { clearInterval(autoGenTimer); autoGenTimer = null; }
   if (screenCommentTimer) { clearTimeout(screenCommentTimer); screenCommentTimer = null; }
   if (hmapTimer) { clearInterval(hmapTimer); hmapTimer = null; }
+  for (const box of hmapSpawnedBoxes) { if (!box.win.isDestroyed()) box.win.close(); }
+  hmapSpawnedBoxes.length = 0;
   try { getNative().detach(); } catch (_) {}
   try { getNative().reset(); } catch (_) {}
   try { closeDb(); } catch (_) {}
