@@ -285,6 +285,7 @@ function chatLog(msg: string) {
 }
 
 let mascotAbortController: AbortController | null = null;
+let lastChatBubbleId: number | null = null;
 
 async function handleMascotChat(userMessage: string) {
   const genId = ++mascotChatGenId;
@@ -293,6 +294,22 @@ async function handleMascotChat(userMessage: string) {
   if (mascotAbortController) {
     mascotAbortController.abort();
     mascotAbortController = null;
+  }
+
+  // Pop the previous chat bubble
+  if (lastChatBubbleId !== null) {
+    const idx = hmapSpawnedBoxes.findIndex(b => b.id === lastChatBubbleId);
+    if (idx >= 0) {
+      const box = hmapSpawnedBoxes[idx];
+      for (let br = 0; br < HMAP_BLOCK_H; br++) {
+        for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+          hmapOccupied.delete(`${box.row + br},${box.col + bc}`);
+        }
+      }
+      if (!box.win.isDestroyed()) { box.win.hide(); setTimeout(() => { if (!box.win.isDestroyed()) box.win.close(); }, 100); }
+      hmapSpawnedBoxes.splice(idx, 1);
+    }
+    lastChatBubbleId = null;
   }
 
   if (!mascotWindow || mascotWindow.isDestroyed()) return;
@@ -357,6 +374,20 @@ async function handleMascotChat(userMessage: string) {
     if (mascotWindow && !mascotWindow.isDestroyed()) {
       mascotWindow.webContents.send("mascot-chat-response", reply);
     }
+    // Also spawn a bubble with the reply
+    try {
+      const spot = findBestHmapSpot();
+      if (spot) {
+        spawnChatboxWindow(spot.x, spot.y, reply, spot.row, spot.col);
+        for (let br = 0; br < HMAP_BLOCK_H; br++) {
+          for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+            hmapOccupied.add(`${spot.row + br},${spot.col + bc}`);
+          }
+        }
+        // Track so we can pop it on next message
+        lastChatBubbleId = hmapChatboxId;
+      }
+    } catch (_) {}
   } catch (err: any) {
     if (signal.aborted || genId !== mascotChatGenId) return; // cancelled or stale
     chatLog(`[mascot] gen=${genId} ERROR: ${err.message}`);
@@ -1018,22 +1049,19 @@ async function captureAndComment() {
       if (mascotWindow && !mascotWindow.isDestroyed()) {
         mascotWindow.webContents.send("mascot-screen-comment", comment);
       }
-      // Also show in a chatbox bubble — pick one with "A new thought..." or spawn fresh
-      const thoughtBubble = hmapSpawnedBoxes.find(b => !b.win.isDestroyed() && b.hasThought);
-      if (thoughtBubble) {
-        thoughtBubble.win.webContents.executeJavaScript(
-          `document.querySelector(".bubble-text").textContent = ${JSON.stringify(comment)};`
-        ).catch(() => {});
-        thoughtBubble.hasThought = false; // mark as used
-      } else if (hmapSpawnedBoxes.length > 0) {
-        // Use the newest bubble
-        const newest = hmapSpawnedBoxes[hmapSpawnedBoxes.length - 1];
-        if (!newest.win.isDestroyed()) {
-          newest.win.webContents.executeJavaScript(
-            `document.querySelector(".bubble-text").textContent = ${JSON.stringify(comment)};`
-          ).catch(() => {});
+      // Spawn a new bubble with the comment at the best calm spot
+      try {
+        const bestSpot = findBestHmapSpot();
+        if (bestSpot) {
+          spawnChatboxWindow(bestSpot.x, bestSpot.y, comment, bestSpot.row, bestSpot.col);
+          // Mark cells as occupied
+          for (let br = 0; br < HMAP_BLOCK_H; br++) {
+            for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+              hmapOccupied.add(`${bestSpot.row + br},${bestSpot.col + bc}`);
+            }
+          }
         }
-      }
+      } catch (_) {}
     } else {
       scLog(`[screen-comment] No comment or mascot gone. comment=${!!comment}`);
     }
@@ -1103,7 +1131,26 @@ function spawnChatboxWindow(x: number, y: number, text: string, row: number, col
   });
 
   win.loadFile(path.join(__dirname, "..", "..", "chatbox-bubble.html"));
-  win.webContents.once("did-finish-load", () => win.showInactive());
+  win.webContents.once("did-finish-load", () => {
+    // Set the text content and auto-resize for longer messages
+    const escaped = JSON.stringify(text);
+    win.webContents.executeJavaScript(`
+      const box = document.getElementById("box");
+      box.textContent = ${escaped};
+      // Auto-height based on content
+      const h = Math.min(Math.max(box.scrollHeight + 4, 55), 200);
+      document.documentElement.style.height = h + "px";
+      document.body.style.height = h + "px";
+    `).then(() => {
+      // Resize window to fit content
+      const bounds = win.getBounds();
+      win.webContents.executeJavaScript(`document.getElementById("box").scrollHeight + 4`).then((h: number) => {
+        const newH = Math.min(Math.max(h, 55), 200);
+        win.setBounds({ x: bounds.x, y: bounds.y, width: 300, height: newH });
+        win.showInactive();
+      }).catch(() => win.showInactive());
+    }).catch(() => win.showInactive());
+  });
 
   // When this bubble wants to close itself
   win.webContents.on("ipc-message", (_e, channel) => {
@@ -1139,6 +1186,68 @@ function spawnChatboxWindow(x: number, y: number, text: string, row: number, col
 
 let hmapBusy = false;
 let hmapPaused = false;
+function findBestHmapSpot(): { row: number; col: number; x: number; y: number; score: number } | null {
+  let bestScore = Infinity;
+  let bestRow = -1;
+  let bestCol = -1;
+
+  for (let row = 3; row <= HMAP_ROWS - HMAP_BLOCK_H - 1; row++) {
+    for (let col = 0; col <= HMAP_COLS - HMAP_BLOCK_W; col++) {
+      let occupied = false;
+      for (let br = 0; br < HMAP_BLOCK_H && !occupied; br++) {
+        for (let bc = 0; bc < HMAP_BLOCK_W && !occupied; bc++) {
+          if (hmapOccupied.has(`${row + br},${col + bc}`)) occupied = true;
+        }
+      }
+      if (occupied) continue;
+
+      let motionScore = 0;
+      let varScore = 0;
+      const cellVars: number[] = [];
+      for (let br = 0; br < HMAP_BLOCK_H; br++) {
+        for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
+          const idx = (row + br) * HMAP_COLS + (col + bc);
+          motionScore += hmapGrid[idx];
+          varScore += hmapVarGrid[idx];
+          cellVars.push(hmapVarGrid[idx]);
+        }
+      }
+
+      let crossCellVar = 0;
+      if (cellVars.length > 1) {
+        const avg = cellVars.reduce((a, b) => a + b, 0) / cellVars.length;
+        crossCellVar = cellVars.reduce((a, v) => a + (v - avg) ** 2, 0) / cellVars.length;
+      }
+
+      let score = motionScore + varScore * 2.0 + crossCellVar * 3.0;
+
+      const distLeft = col;
+      const distRight = HMAP_COLS - HMAP_BLOCK_W - col;
+      const distTop = row - 3;
+      const distBottom = HMAP_ROWS - HMAP_BLOCK_H - 1 - row;
+      const edgeDistX = Math.min(distLeft, distRight);
+      const edgeDistY = Math.min(distTop, distBottom);
+      const edgeDist = Math.min(edgeDistX, edgeDistY);
+      const maxDist = Math.min(HMAP_COLS / 2, HMAP_ROWS / 2);
+      const edgeFactor = 1.0 + (edgeDist / maxDist) * 1.0;
+      score *= edgeFactor;
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestRow = row;
+        bestCol = col;
+      }
+    }
+  }
+
+  if (bestRow < 0) return null;
+
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
+  const x = Math.min(Math.round((bestCol / HMAP_COLS) * workArea.width), workArea.width - 310);
+  const y = Math.min(Math.round((bestRow / HMAP_ROWS) * workArea.height), workArea.height - 60);
+  return { row: bestRow, col: bestCol, x, y, score: bestScore };
+}
+
 async function hmapTick() {
   if (hmapBusy || hmapPaused) return;
   if (!frontpaperWindow || frontpaperWindow.isDestroyed()) return;
@@ -1231,67 +1340,9 @@ async function hmapTick() {
     if (hmapFrameCount % HMAP_SPAWN_INTERVAL !== 0) return;
     try { fs.appendFileSync(path.join(MEDIA_DIR, "..", "heatmap.log"), new Date().toISOString() + ` spawn check frame=${hmapFrameCount} occupied=${hmapOccupied.size}\n`); } catch (_) {}
 
-    // Find best unoccupied position (low motion + low variance = calm monotone)
-    let bestScore = Infinity;
-    let bestRow = -1;
-    let bestCol = -1;
-
-    for (let row = 3; row <= HMAP_ROWS - HMAP_BLOCK_H - 1; row++) {
-      for (let col = 0; col <= HMAP_COLS - HMAP_BLOCK_W; col++) {
-        // Skip if this block overlaps any occupied block
-        let occupied = false;
-        for (let br = 0; br < HMAP_BLOCK_H && !occupied; br++) {
-          for (let bc = 0; bc < HMAP_BLOCK_W && !occupied; bc++) {
-            if (hmapOccupied.has(`${row + br},${col + bc}`)) occupied = true;
-          }
-        }
-        if (occupied) continue;
-
-        let motionScore = 0;
-        let varScore = 0;
-        const cellVars: number[] = [];
-        for (let br = 0; br < HMAP_BLOCK_H; br++) {
-          for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
-            const idx = (row + br) * HMAP_COLS + (col + bc);
-            motionScore += hmapGrid[idx];
-            varScore += hmapVarGrid[idx];
-            cellVars.push(hmapVarGrid[idx]);
-          }
-        }
-
-        // Penalize blocks where cells have different variance levels
-        // (means different monotone patches = 2+ colors, not a single uniform area)
-        let crossCellVar = 0;
-        if (cellVars.length > 1) {
-          const avg = cellVars.reduce((a, b) => a + b, 0) / cellVars.length;
-          crossCellVar = cellVars.reduce((a, v) => a + (v - avg) ** 2, 0) / cellVars.length;
-        }
-
-        // Combined: motion + per-cell variance + cross-cell uniformity penalty
-        let score = motionScore + varScore * 2.0 + crossCellVar * 3.0;
-
-        // Perimeter bias — prefer edges, corners, top, bottom
-        // Distance from nearest edge (0 = on edge, higher = more center)
-        const distLeft = col;
-        const distRight = HMAP_COLS - HMAP_BLOCK_W - col;
-        const distTop = row - 3; // offset by min row
-        const distBottom = HMAP_ROWS - HMAP_BLOCK_H - 1 - row;
-        const edgeDistX = Math.min(distLeft, distRight);
-        const edgeDistY = Math.min(distTop, distBottom);
-        const edgeDist = Math.min(edgeDistX, edgeDistY);
-        const maxDist = Math.min(HMAP_COLS / 2, HMAP_ROWS / 2);
-        // Center gets up to 2x penalty, edges get 1x (no penalty)
-        const edgeFactor = 1.0 + (edgeDist / maxDist) * 1.0;
-        score *= edgeFactor;
-        if (score < bestScore) {
-          bestScore = score;
-          bestRow = row;
-          bestCol = col;
-        }
-      }
-    }
-
-    if (bestRow < 0) return; // no valid unoccupied spot
+    const bestSpot = findBestHmapSpot();
+    if (!bestSpot) return;
+    const { row: bestRow, col: bestCol, x, y, score: bestScore } = bestSpot;
     if (hmapSpawnedBoxes.length >= 10) {
       // Remove oldest bubble to make room
       const oldest = hmapSpawnedBoxes.shift()!;
@@ -1303,11 +1354,6 @@ async function hmapTick() {
       if (!oldest.win.isDestroyed()) oldest.win.close();
       console.log(`[heatmap] Recycled oldest bubble #${oldest.id}`);
     }
-
-    // Spawn new chatbox
-    const workArea = screen.getPrimaryDisplay().workAreaSize;
-    const x = Math.min(Math.round((bestCol / HMAP_COLS) * workArea.width), workArea.width - 310);
-    const y = Math.min(Math.round((bestRow / HMAP_ROWS) * workArea.height), workArea.height - 60);
 
     // Log score breakdown
     let dbgMotion = 0, dbgVar = 0, dbgCross = 0;
@@ -1328,15 +1374,8 @@ async function hmapTick() {
       new Date().toISOString() + ` SPAWN (${bestRow},${bestCol}) → (${x},${y}) motion=${dbgMotion.toFixed(1)} var=${dbgVar.toFixed(1)} crossVar=${dbgCross.toFixed(1)} total=${bestScore.toFixed(1)}\n`);
     } catch (_) {}
 
-    spawnChatboxWindow(x, y, "A new thought...", bestRow, bestCol);
-
-    // Mark cells as occupied
-    for (let br = 0; br < HMAP_BLOCK_H; br++) {
-      for (let bc = 0; bc < HMAP_BLOCK_W; bc++) {
-        hmapOccupied.add(`${bestRow + br},${bestCol + bc}`);
-      }
-    }
-    hmapSkipFrames = 2;
+    // No placeholder bubbles — only spawn when we have actual content
+    // (chat responses and screen analysis call findBestHmapSpot() + spawnChatboxWindow() directly)
   } catch (_) {} finally {
     hmapBusy = false;
   }
